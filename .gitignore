@@ -1,0 +1,7 @@
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+.impeccable/review/
+.impeccable/serve-start.log
+xcuserdata/

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="../../App/Resources/web/transcript.css">
+<link rel="stylesheet" href="../../App/Resources/web/icons.css">
+<script src="../../App/Resources/web/marked.min.js"></script>
+<script src="../../App/Resources/web/highlight.min.js"></script>
+<style>body { background: #fff; }</style>
+</head>
+<body>
+<main id="root">
+  <div id="list"></div>
+  <div id="working" hidden><span class="pulse"></span><span id="working-text"></span></div>
+</main>
+<script src="../../App/Resources/web/transcript.js"></script>
+<script>
+  // 网页层的固定样张：不用真跑 claude 也能看各种块长什么样。
+  const now = new Date().toISOString();
+  CS.upsert({ id: 'u1', kind: 'user', text: '把 ~/Developer 里的目录列出来，做成表格', done: true }, 0);
+  CS.upsert({ id: 'a1', kind: 'assistant', done: true, blocks: [
+    { id: 't1', kind: 'thinking', text: '先看一眼目录，再决定表格列。', done: true },
+    { id: 'tool1', kind: 'tool', done: true, tool: { id: 'tool1', name: 'Bash', input: { command: 'ls ~/Developer', description: '列出开发目录' }, result: 'ClaudeShell\nOPCDesk\nhoronis', done: true, isError: false, startedAt: '2026-09-13T01:00:00Z', endedAt: '2026-09-13T01:00:12Z' } },
+    { id: 'tool2', kind: 'tool', done: true, tool: { id: 'tool2', name: 'Edit', input: { file_path: '/Users/x/a.swift', old_string: 'let a = 1', new_string: 'let a = 2' }, result: 'ok', done: true, isError: false } },
+    { id: 'x1', kind: 'text', done: true, text: '| 目录 | 用途 |\n|---|---|\n| ClaudeShell | 这个壳 |\n\n```swift\nlet x = 1\n```\n\n完成。' },
+  ]}, 1);
+  CS.upsert({ id: 'a2', kind: 'assistant', done: false, blocks: [
+    { id: 't2', kind: 'thinking', text: '', done: false },
+  ]}, 2);
+  CS.upsert({ id: 'n1', kind: 'note', text: '已停止', level: 'info', done: true }, 3);
+  document.querySelectorAll('details').forEach((d) => { d.open = true; });
+</script>
+</body>
+</html>
