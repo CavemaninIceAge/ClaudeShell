@@ -1,0 +1,50 @@
+# Claude Shell
+
+*いつも使っている Claude Code に、静かなネイティブの殻をかぶせる。*
+
+[English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [Français](README.fr.md) · **日本語** · [Español](README.es.md) · [Deutsch](README.de.md)
+
+Claude Shell は、ローカルの Claude Code CLI に Codex 風の顔をかぶせる小さな macOS アプリです。左側には `~/.claude/projects` 配下の全セッションがプロジェクトごとにまとまって並びます——ターミナルで開いたものも含みます。右側は現在の会話で、Markdown 本文、折りたためる思考・ツールのステップ、権限カードが表示されます。下で動いているのは `~/.local/bin/claude` そのものなので、モデル、権限モード、`CLAUDE.md`、メモリ、スキル、MCP サーバー、hooks は、すべてターミナルとまったく同じです。
+
+## ただの殻——そこが肝心
+
+Claude Code を作り直したりはしません。独自のモデルクライアントも、別の認証も、データの二つ目のコピーも持ちません。あなたがすでに信頼している同じ `claude` バイナリを起動し、それがすでに書いているのと同じセッションファイルを読むだけです。アプリ自身が持つのは三つのごく小さなものだけ——変更したタイトル、非表示フラグ、会話ごとの設定——で、いずれも `~/Library/Application Support/Claude Shell/` に置かれます。会話そのものは常に `~/.claude` にあり、コマンドラインが元々送るもの以外、何もあなたのマシンから出て行きません。
+
+こうして、本物のネイティブウィンドウ——Dock のアイコン、⌘N、まともなテキスト欄——が手に入ります。しかも、コマンドラインがすでに持っている以上に広くファイルやデータへのアクセスを何かに与えることはありません。信頼の境界は同じまま、見た目だけが良くなります。
+
+## できること
+
+- **ターミナルにライブで追従。** ターミナルで動いているセッションには緑の点が付きます。開くと Claude Shell がセッションファイルを tail するので、向こう側の一手一手がここにリアルタイムで現れます。
+- **ターミナルへ返す。** 動いているターミナルセッションに入力すると、そのメッセージは Claude Code 自身のクロスセッション・メッセージングでそのセッションへ届きます——ターミナルが答え、その答えがここに同期されます。
+- **ターミナルが見せるものを見せる。** recap（要約）、他のセッションから届いたメッセージ、キューに積まれた入力、コンテキスト圧縮の通知、思考行の effort レベル。
+- **モデルと effort を明示。** ピルとツールバーは常に実際に効いている値（`Opus 5 (1M) · xhigh`）を表示します。`ultracode` も同様で、「設定に従う」の裏に隠しません。
+- **会話ごとに 1 プロセス。** 温めたまま保持し、アイドル後は `--resume` で復帰させます。
+
+## 実行
+
+```
+./scripts/build.sh            # Debug ビルドを DerivedData/ へ
+./scripts/install.sh          # Release ビルド → /Applications → Dock に追加
+./scripts/shot.sh out.png     # 実行中のウィンドウをスクリーンショット
+```
+
+ショートカット：⌘N 新規 · ⇧⌘N フォルダ内で新規 · ⏎ 送信 · ⇧⏎ 改行 · ⌘. 停止 · ⌘R 更新。
+
+## 内部構造
+
+- Swift 6 + SwiftUI + AppKit、プロジェクトは XcodeGen 生成、サードパーティの Swift 依存なし。
+- 本文は `WKWebView` で描画し、marked + highlight.js をオフラインで同梱。
+- サンドボックス外（子プロセスを起こし `~/.claude` を読むため）、ローカル実行用に署名。
+- クロスセッション配信、stream-json プロトコル、デザインシステムは `docs/` と `DESIGN.md` に記載。
+
+## 構成
+
+```
+App/Sources/Engine/   子プロセス、stream-json → イベント、クロスセッション配信
+App/Sources/Model/    ひとつの会話、セッション一覧、transcript のモデル
+App/Sources/UI/       サイドバー、スレッド表示、コンポーザー、権限カード、テーマ
+App/Resources/web/    transcript.html / .css / .js —— 会話の本文
+docs/ · DESIGN.md · PRODUCT.md   プロトコルノート、デザインシステム、プロダクト記録
+```
+
+macOS 15 以降と、動作する Claude Code（`~/.local/bin/claude`）が必要です。
