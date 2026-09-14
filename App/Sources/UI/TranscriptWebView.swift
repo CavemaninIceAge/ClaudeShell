@@ -28,7 +28,8 @@ struct TranscriptWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ web: WKWebView, context: Context) {
-        context.coordinator.sync(items: controller.items, working: controller.isWorking, status: controller.statusText ?? "")
+        context.coordinator.sync(items: controller.items, working: controller.showsActivity,
+                                 status: controller.activityText ?? "", effort: controller.activeEffortLabel)
     }
 
     static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
@@ -41,11 +42,11 @@ struct TranscriptWebView: NSViewRepresentable {
         weak var webView: WKWebView?
         private var ready = false
         private var sentRevs: [String: Int] = [:]
-        private var pending: (items: [TranscriptItem], working: Bool, status: String)?
+        private var pending: (items: [TranscriptItem], working: Bool, status: String, effort: String)?
 
-        func sync(items: [TranscriptItem], working: Bool, status: String) {
+        func sync(items: [TranscriptItem], working: Bool, status: String, effort: String) {
             guard ready, let web = webView else {
-                pending = (items, working, status)
+                pending = (items, working, status, effort)
                 return
             }
             var js = ""
@@ -61,6 +62,7 @@ struct TranscriptWebView: NSViewRepresentable {
                 }
                 sentRevs[item.id] = item.rev
             }
+            js += "CS.setEffort(\(JSONValue.string(effort).serialized()));"
             js += "CS.setWorking(\(working ? "true" : "false"), \(JSONValue.string(status).serialized()));"
             if UserDefaults.standard.bool(forKey: "testExpandAll") {
                 js += "document.querySelectorAll('details').forEach(function (d) { d.open = true; });"
@@ -75,7 +77,7 @@ struct TranscriptWebView: NSViewRepresentable {
                 ready = true
                 if let p = pending {
                     pending = nil
-                    sync(items: p.items, working: p.working, status: p.status)
+                    sync(items: p.items, working: p.working, status: p.status, effort: p.effort)
                 }
             case "open":
                 if let s = body["url"] as? String, let url = URL(string: s) { NSWorkspace.shared.open(url) }

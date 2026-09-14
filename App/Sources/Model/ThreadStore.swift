@@ -38,6 +38,13 @@ final class ThreadStore {
     private(set) var controllers: [String: ConversationController] = [:]
     private(set) var isScanning = false
     private(set) var claudeMissing = false
+    /// 终端里的默认模型 / 强度（问 claude 本尊得来），给「跟随终端设置」「默认强度」显示具体值用。
+    private(set) var terminalDefaults = ClaudeDefaults.Resolved() {
+        didSet { if terminalDefaults != oldValue { pushDefaultsToControllers() } }
+    }
+    /// Claude Code 上次自更新失败了没：失败就在侧栏底部挂一条提示（和终端一样）。用户点掉就不再显示这一条。
+    private(set) var updateStatus = UpdateStatus.Result(failed: false)
+    var updateBannerDismissed = false
     var query = ""
     var defaultSettings = ThreadSettings()
     var selectedId: String? {
@@ -49,6 +56,7 @@ final class ThreadStore {
 
     @ObservationIgnored private var bootstrapped = false
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var liveTimer: Timer?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
     private var supportDir: URL {
@@ -130,11 +138,14 @@ final class ThreadStore {
         }
         // 一进来就是一个新对话页面（和 Codex 一样）。
         if selectedId == nil { newThread() }
-        // 找 claude 要跑一次登录 shell，放后台。
+        // 找 claude 要跑一次登录 shell，放后台；找到了顺手问它终端默认的模型 / 强度。
         Task.detached(priority: .utility) {
             let missing = ShellEnvironment.claudeExecutable() == nil
             await MainActor.run { ThreadStore.shared.claudeMissing = missing }
+            let resolved = ClaudeDefaults.probe()
+            await MainActor.run { ThreadStore.shared.terminalDefaults = resolved }
         }
+        updateStatus = UpdateStatus.read()
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
@@ -142,6 +153,10 @@ final class ThreadStore {
         }
         timer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { _ in
             Task { @MainActor in await ThreadStore.shared.refresh() }
+        }
+        // 终端里的会话开着没、忙不忙，两秒看一眼登记表（十来个小文件），侧栏绿点和旁观状态都靠它。
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            Task { @MainActor in ThreadStore.shared.refreshLive() }
         }
         await refresh()
         runTestHooksIfNeeded()
@@ -156,11 +171,21 @@ final class ThreadStore {
         }
         guard let prompt = defaults.string(forKey: "testPrompt"), !prompt.isEmpty, let id = selectedId else { return }
         var s = defaultSettings
-        if let model = defaults.string(forKey: "testModel"), !model.isEmpty { s.model = model }
+        // testModel / testEffort 写 "terminal" 表示跟随终端设置（清掉本对话的指定）。
+        if let model = defaults.string(forKey: "testModel"), !model.isEmpty { s.model = model == "terminal" ? nil : model }
         if let mode = defaults.string(forKey: "testMode"), !mode.isEmpty { s.permissionMode = mode }
+        if let effort = defaults.string(forKey: "testEffort"), !effort.isEmpty { s.effort = effort == "terminal" ? nil : effort }
         // 只给这一次测试用，不写进"下次新对话的默认"。
         controllers[id]?.settings = s
-        controllers[id]?.send(prompt)
+        if controllers[id]?.isLiveInTerminal == true {
+            // 选中的是终端里开着的会话：等历史读完再投递，看那边回答能不能同步回来。
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                self?.controllers[id]?.sendToTerminal(prompt)
+            }
+        } else {
+            controllers[id]?.send(prompt)
+        }
     }
 
     func refresh() async {
@@ -172,7 +197,13 @@ final class ThreadStore {
             (SessionIndex.scan(previous: previous), SessionIndex.liveSessions())
         }.value
         records = result.0
-        live = result.1
+        applyLive(result.1)
+        // settings.json 改过（终端里 /model、/effort 持久化了）就重新问一次默认值。
+        if let modified = ClaudeDefaults.settingsModifiedDate(), modified != terminalDefaults.settingsModified,
+           terminalDefaults.settingsModified != nil {
+            let resolved = await Task.detached(priority: .utility) { ClaudeDefaults.probe() }.value
+            terminalDefaults = resolved
+        }
         // 草稿一旦在磁盘上有了文件，就从草稿名单里退出。
         for id in drafts.keys where records[id] != nil { drafts[id] = nil }
         isScanning = false
@@ -180,6 +211,24 @@ final class ThreadStore {
         if let data = try? JSONEncoder.standard.encode(records) {
             try? data.write(to: cacheURL, options: .atomic)
         }
+    }
+
+    func refreshLive() {
+        applyLive(SessionIndex.liveSessions())
+    }
+
+    private func applyLive(_ new: [String: String]) {
+        if new != live { live = new }
+        for (id, c) in controllers { c.setTerminalStatus(new[id]) }
+        let latest = UpdateStatus.read()
+        if latest != updateStatus {
+            updateStatus = latest
+            if !latest.failed { updateBannerDismissed = false }   // 装好了就重置，下次再失败还会提示
+        }
+    }
+
+    private func pushDefaultsToControllers() {
+        for c in controllers.values { c.terminalDefaultEffort = terminalDefaults.effort }
     }
 
     // MARK: - 对话
@@ -235,6 +284,8 @@ final class ThreadStore {
             d.updatedAt = Date()
             self.drafts[controller.id] = d
         }
+        c.setTerminalStatus(live[id])
+        c.terminalDefaultEffort = terminalDefaults.effort
         controllers[id] = c
     }
 

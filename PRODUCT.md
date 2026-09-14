@@ -36,7 +36,10 @@ ios
 ## Capabilities and Constraints
 
 - 每个对话对应一个 `claude` 子进程，切换对话不杀进程；空闲 20 分钟后回收，下次发送用 `--resume` 拉起。
-- 每对话可选：模型（跟随设置 / fable / opus / sonnet / haiku）、权限模式（auto / acceptEdits / manual / plan / bypassPermissions）、effort。改动在下一轮生效。
+- 终端里正在跑的会话不起进程：旁观（tail 会话文件同步显示）+ 投递（在这里输入的话经跨会话消息协议送进终端，那边回答）。
+  用户 2026-09-13 明确要求"套壳里发消息要同步到终端里、对话同步"，不接受"那边结束后才能续聊"。
+- 每对话可选：模型（跟随设置 / fable / opus / opus[1m] / sonnet / sonnet[1m] / haiku）、权限模式（auto / acceptEdits / manual / plan / bypassPermissions）、强度（默认 / low / medium / high / xhigh / max / ultracode）。改动在下一轮生效。
+- 模型和强度必须明着显示（用户 2026-09-13 要求"像终端一样 explicit"）：胶囊与工具栏写具体生效值，不写"跟随设置"这种黑盒字样；来源放悬停提示。
 - 新对话默认工作目录是家目录（和用户平时在终端启动的位置一致），可在发送第一条消息前换目录；会话开始后目录不可改（这是 Claude Code 的规则）。
 - 不做：多窗口拖拽 diff 面板、文件树、账号管理、快捷指令面板、语音。
 - UI 文案中文；日期不在当年的要带年份。

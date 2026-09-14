@@ -35,37 +35,44 @@ struct ThreadView: View {
         }
         .task { controller.loadHistoryIfNeeded() }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
+            // macOS 26 会给工具栏项套一层玻璃胶囊，这行只是一行小字，不要那层壳（One Shadow Rule）。
+            if #available(macOS 26.0, *) {
+                ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
+            }
         }
     }
 }
 
-/// 工具栏右侧的一小行：本会话花费 + 模型。进行中的状态只在正文里那一行 shimmer 上显示。
+/// 工具栏右侧的一小行：模型 · 强度 · 本会话花费——和终端一样明着写，悬停看原始 id 和来源。
+/// 进行中的状态只在正文里那一行 shimmer 上显示。
 private struct StatusBadge: View {
     let controller: ConversationController
+    @Environment(ThreadStore.self) private var store
 
     var body: some View {
-        HStack(spacing: 6) {
+        let e = controller.effective(defaults: store.terminalDefaults)
+        HStack(spacing: 0) {
+            if let name = e.modelName {
+                Text(name)
+                    .help("模型：\(e.modelId ?? name)（\(e.modelPinned ? "本对话指定" : "跟随终端设置")）")
+            }
+            if let effort = e.effort {
+                if e.modelName != nil { Text(" · ") }
+                Text(effort)
+                    .help("强度：\(effort)（\(e.effortPinned ? "本对话指定" : "终端默认")）")
+            }
             if controller.totalCostUSD > 0 {
+                if e.modelName != nil || e.effort != nil { Text(" · ") }
                 Text(String(format: "$%.2f", controller.totalCostUSD))
                     .monospacedDigit()
                     .help("本会话累计花费（按 API 价目估算）")
             }
-            if let model = controller.sessionModel {
-                Text(shortModel(model))
-                    .help("当前模型：\(model)")
-            }
         }
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
-    }
-
-    private func shortModel(_ id: String) -> String {
-        if id.contains("fable") { return "Fable" }
-        if id.contains("opus") { return "Opus" }
-        if id.contains("sonnet") { return "Sonnet" }
-        if id.contains("haiku") { return "Haiku" }
-        return id
     }
 }
 

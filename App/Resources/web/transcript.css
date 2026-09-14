@@ -149,6 +149,8 @@ details > summary .icon { width: 15px; height: 15px; }
 details > summary .chev .icon { width: 12px; height: 12px; }
 details > summary .chev { display: inline-flex; transition: transform 160ms ease-out; }
 details[open] > summary .chev { transform: rotate(90deg); }
+/* 流式思考行上的强度徽标，对应终端「thinking with xhigh effort」。 */
+.effort-tag { font-size: 11px; color: var(--fg-3); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; line-height: 15px; }
 .thinking-body { margin: 6px 0 4px 20px; color: var(--fg-2); font-size: 13px; line-height: 1.6; border-left: 2px solid var(--line); padding-left: 12px; }
 .thinking-body > :first-child { margin-top: 0; }
 .thinking-body > :last-child { margin-bottom: 0; }
@@ -178,6 +180,10 @@ details.step > summary .spinner { width: 10px; height: 10px; border: 1.5px solid
 .item.note { text-align: center; font-size: 12px; color: var(--fg-2); white-space: pre-wrap; }
 .item.note.level-warn { color: var(--warn); }
 .item.note.level-error { color: var(--danger); text-align: left; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 8px; font-size: 12.5px; }
+/* 终端里离开回来时那条「※ recap:」，这里对齐做成一条左标线的摘要块。 */
+.item.note.level-recap { text-align: left; display: flex; gap: 8px; padding: 8px 12px; font-size: 12.5px; color: var(--fg-2); white-space: normal; border-left: 2px solid var(--fg-3); background: var(--panel); border-radius: 0 8px 8px 0; }
+.item.note.level-recap .recap-tag { flex: none; font-weight: 600; color: var(--fg); text-transform: lowercase; letter-spacing: 0.02em; }
+.item.note.level-recap .recap-body { flex: 1; }
 
 /* 工作中指示 */
 #working { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--fg-2); font-size: 13px; }

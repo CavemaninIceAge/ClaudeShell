@@ -32,6 +32,11 @@ struct SidebarView: View {
         .listStyle(.sidebar)
         .searchable(text: Binding(get: { store.query }, set: { store.query = $0 }), placement: .sidebar, prompt: "搜索对话")
         .safeAreaInset(edge: .top, spacing: 0) { NewThreadButton() }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.updateStatus.failed && !store.updateBannerDismissed {
+                UpdateFailedBanner()
+            }
+        }
         .overlay {
             if store.groups.isEmpty {
                 ContentUnavailableView(store.query.isEmpty ? "还没有对话" : "没有匹配的对话",
@@ -94,6 +99,53 @@ private struct ThreadRow: View {
 }
 
 /// Codex 侧栏顶上那一行"New thread"。
+/// Claude Code 自更新失败时侧栏底部那条提示，和终端「✗ Auto-update failed · Run claude doctor」对应。
+/// 点整条给个怎么修的说明，右边 ✕ 可以先关掉；下次装好或再失败都会重来。
+private struct UpdateFailedBanner: View {
+    @Environment(ThreadStore.self) private var store
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Claude Code 自更新失败")
+                    .font(.system(size: 12, weight: .medium))
+                Text("在终端里跑 `claude doctor` 排查")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button { store.updateBannerDismissed = true } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(4)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("先关掉这条")
+        }
+        .foregroundStyle(Theme.warn)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            // 先铺一层不透明底，再叠 warn 淡色，免得侧栏列表从半透明里透出来。
+            .fill(Theme.background)
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Theme.warn.opacity(hovering ? 0.16 : 0.11))))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Theme.warn.opacity(0.28), lineWidth: 1))
+        .padding(.horizontal, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(.bar)   // 整条页脚不透明，列表滚到底不会叠上来
+        .onHover { hovering = $0 }
+        .help("在终端里运行 claude doctor 查看原因（上次从 \(store.updateStatus.versionFrom ?? "?") 起更新失败）")
+    }
+}
+
 private struct NewThreadButton: View {
     @Environment(ThreadStore.self) private var store
     @State private var hovering = false

@@ -46,11 +46,36 @@ enum ModelOption {
         ("", "跟随终端设置"),
         ("fable", "Fable 5.1"),
         ("opus", "Opus 5"),
+        ("opus[1m]", "Opus 5 (1M)"),
         ("sonnet", "Sonnet 5"),
+        ("sonnet[1m]", "Sonnet 5 (1M)"),
         ("haiku", "Haiku 4.5"),
     ]
     static func title(for id: String?) -> String {
         all.first { $0.id == (id ?? "") }?.title ?? (id ?? "")
+    }
+
+    /// 把 CLI 报回来的 id（`claude-opus-5[1m]`、`claude-haiku-4-5-20251001`）或 settings.json 里的别名（`opus[1m]`）
+    /// 变成终端里那种显示名（`Opus 5 (1M)`）。认不出的原样返回。
+    static func displayName(for raw: String) -> String {
+        var id = raw.trimmingCharacters(in: .whitespaces)
+        var oneM = false
+        if id.lowercased().hasSuffix("[1m]") { id.removeLast(4); oneM = true }
+        if let known = all.first(where: { $0.id == id && !$0.id.isEmpty }) {
+            return oneM ? known.title + " (1M)" : known.title
+        }
+        var base = id
+        if id.hasPrefix("claude-") {
+            // claude-<family>-<major>[-<minor>][-<日期>]
+            let parts = id.dropFirst("claude-".count).split(separator: "-").map(String.init)
+            if parts.count >= 2, let family = parts.first {
+                let numbers = parts.dropFirst().filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) && $0.count < 8 }
+                if !numbers.isEmpty {
+                    base = family.prefix(1).uppercased() + family.dropFirst() + " " + numbers.joined(separator: ".")
+                }
+            }
+        }
+        return oneM ? base + " (1M)" : base
     }
 }
 
@@ -68,6 +93,8 @@ enum PermissionModeOption {
 }
 
 enum EffortOption {
+    /// 和终端 `/effort` 的取值一致；ultracode = xhigh + 动态多代理工作流，需要模型支持 xhigh（haiku 会被静默降级）。
+    static let ultracode = "ultracode"
     static let all: [(id: String, title: String)] = [
         ("", "默认强度"),
         ("low", "low"),
@@ -75,6 +102,7 @@ enum EffortOption {
         ("high", "high"),
         ("xhigh", "xhigh"),
         ("max", "max"),
+        (ultracode, "ultracode · xhigh + 多代理工作流"),
     ]
     static func title(for id: String?) -> String {
         all.first { $0.id == (id ?? "") }?.title ?? (id ?? "")

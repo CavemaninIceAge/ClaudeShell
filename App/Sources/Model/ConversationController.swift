@@ -34,6 +34,12 @@ final class ConversationController: Identifiable {
     private(set) var historyLoaded = false
     private(set) var isLoadingHistory = false
     private(set) var hasSessionFile: Bool
+    /// 终端里开着这个会话：登记表里的 status（idle / busy）；nil = 终端里没开。
+    private(set) var terminalStatus: String? = nil
+    /// 会话文件里最近一条 assistant 记录的 model：终端会话实际在用的模型（app 自己的进程以 system/init 为准）。
+    private(set) var fileModel: String? = nil
+    /// 终端默认强度，ThreadStore 探到后灌进来：本对话没显式选强度时，思考 shimmer 用它。
+    var terminalDefaultEffort: String? = nil
     var settings: ThreadSettings {
         didSet { if settings != oldValue { settingsChanged() } }
     }
@@ -49,6 +55,9 @@ final class ConversationController: Identifiable {
     @ObservationIgnored private var streamBlockIds: [Int: String] = [:]
     @ObservationIgnored private var turnIndex: Int? = nil
     @ObservationIgnored private var needsRespawn = false
+    // 旁观终端会话用：会话文件读到哪了，以及每秒去看一眼有没有长的任务。
+    @ObservationIgnored private var reader: SessionReader?
+    @ObservationIgnored private var tailTask: Task<Void, Never>?
 
     init(id: String, cwd: String, settings: ThreadSettings, hasSessionFile: Bool) {
         self.id = id
@@ -60,6 +69,10 @@ final class ConversationController: Identifiable {
 
     var isDraft: Bool { !hasSessionFile && working.isEmpty }
     var canSend: Bool { !isWorking && pendingPermissions.isEmpty && !isLoadingHistory }
+    var isLiveInTerminal: Bool { terminalStatus != nil }
+    /// 正文底部那行 shimmer：自己的进程在跑，或者终端那边在跑。
+    var showsActivity: Bool { isWorking || terminalStatus == "busy" }
+    var activityText: String? { isWorking ? statusText : (terminalStatus == "busy" ? "终端里正在运行…" : nil) }
 
     // MARK: - 历史
 
@@ -68,17 +81,102 @@ final class ConversationController: Identifiable {
         isLoadingHistory = true
         let url = SessionIndex.sessionFileURL(id: id, cwd: cwd)
         Task.detached(priority: .userInitiated) { [weak self] in
-            let loaded = SessionLoader.load(url: url)
-            await MainActor.run { self?.applyHistory(loaded) }
+            var r = SessionReader(url: url)
+            r.readMore()
+            await MainActor.run { self?.applyHistory(r) }
         }
     }
 
-    private func applyHistory(_ loaded: [TranscriptItem]) {
+    private func applyHistory(_ r: SessionReader) {
+        var r = r
+        // 终端那边还在写：最后一轮保持"进行中"，后面 tail 接着补；否则收尾。
+        let loaded = isLiveInTerminal ? r.items : r.finishedItems()
+        reader = r
+        fileModel = r.lastModel
         if let t = turnIndex { turnIndex = t + loaded.count }
         working = loaded + working
         historyLoaded = true
         isLoadingHistory = false
         publish()
+    }
+
+    // MARK: - 旁观 / 投递终端会话
+
+    /// 由 ThreadStore 按登记表刷新调用。
+    func setTerminalStatus(_ status: String?) {
+        guard status != terminalStatus else { return }
+        terminalStatus = status
+        if status != nil {
+            startTailing()
+        } else {
+            stopTailing()
+        }
+    }
+
+    private func startTailing() {
+        guard tailTask == nil else { return }
+        tailTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { break }
+                self.readTail(closing: false)
+            }
+        }
+    }
+
+    private func stopTailing() {
+        tailTask?.cancel()
+        tailTask = nil
+        readTail(closing: true)
+    }
+
+    /// 增量只读新追加的那几行，放主线程也不碍事；terminal 退出时把最后一轮收尾。
+    private func readTail(closing: Bool) {
+        guard historyLoaded, var r = reader, process == nil else { return }
+        let grew = r.readMore()
+        if closing {
+            working = r.finishedItems()
+            reader = nil
+            publish()
+            return
+        }
+        reader = r
+        if grew {
+            if fileModel != r.lastModel { fileModel = r.lastModel }
+            working = r.items
+            publish()
+        }
+    }
+
+    /// 把这句话投进终端里正在跑的这个会话：那边的 Claude 会在终端里回答，回答再经 tail 同步回来。
+    func sendToTerminal(_ rawText: String) {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, isLiveInTerminal, !isLoadingHistory else { return }
+        guard let target = PeerMessenger.target(forSessionId: id) else {
+            working.append(.note(PeerMessenger.SendError.notFound.localizedDescription, level: "error"))
+            publish()
+            return
+        }
+        let body = PeerMessenger.body(forUserText: text)
+        if reader != nil {
+            reader?.expectEcho(display: text, body: body, at: Date())
+            working = reader?.items ?? working
+        } else {
+            working.append(.user(text, at: Date()))
+        }
+        publish()
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                try PeerMessenger.send(body, to: target)
+            } catch {
+                let message = error.localizedDescription
+                await MainActor.run {
+                    guard let self else { return }
+                    self.working.append(.note(message, level: "error"))
+                    self.publish()
+                }
+            }
+        }
     }
 
     // MARK: - 发送 / 停止 / 审批
@@ -89,7 +187,7 @@ final class ConversationController: Identifiable {
         let isFirst = !hasSessionFile && working.isEmpty
         working.append(.user(text, at: Date()))
         isWorking = true
-        statusText = "正在思考…"
+        statusText = "正在思考…" + thinkingEffortSuffix
         idleTask?.cancel()
         publish()
         do {
@@ -130,6 +228,8 @@ final class ConversationController: Identifiable {
     func terminate(immediately: Bool = false) {
         idleTask?.cancel()
         pumpTask?.cancel()
+        tailTask?.cancel()
+        tailTask = nil
         process?.terminate(immediately: immediately)
         process = nil
     }
@@ -158,12 +258,53 @@ final class ConversationController: Identifiable {
     }
 
     private func settingsChanged() {
+        // 进程报回来的模型是上一轮的，设置一改就不作数了，下一轮 init 会重新报。
+        sessionModel = nil
         if isWorking {
             needsRespawn = true
         } else {
             process?.terminate()
             process = nil
         }
+    }
+
+    /// 界面上「当前生效」的模型 / 强度：显式选择 > 进程报回来的 > 终端默认。
+    struct Effective {
+        var modelId: String?
+        var modelPinned: Bool
+        var effort: String?
+        var effortPinned: Bool
+        var modelName: String? { modelId.map(ModelOption.displayName(for:)) }
+    }
+
+    func effective(defaults: ClaudeDefaults.Resolved) -> Effective {
+        // 终端里开着的会话：模型 / 强度由终端决定，app 里的选择不作数；模型看会话文件，强度只能按终端默认猜。
+        if isLiveInTerminal {
+            return Effective(modelId: fileModel ?? defaults.model, modelPinned: false,
+                             effort: defaults.effort, effortPinned: false)
+        }
+        let modelPinned = !(settings.model ?? "").isEmpty
+        let effortPinned = !(settings.effort ?? "").isEmpty
+        return Effective(modelId: modelPinned ? settings.model : (sessionModel ?? defaults.model),
+                         modelPinned: modelPinned,
+                         effort: effortPinned ? settings.effort : defaults.effort,
+                         effortPinned: effortPinned)
+    }
+
+    /// 思考时那个强度名，和终端「thinking with xhigh effort」一致；ultracode 实际强度是 xhigh。
+    /// 终端里旁观的会话按它自己文件里的默认强度显示；本 app 的进程按本对话选的（没选就用终端默认）。
+    var activeEffortLabel: String {
+        let raw: String
+        if isLiveInTerminal {
+            raw = terminalDefaultEffort ?? ""
+        } else {
+            raw = (settings.effort?.isEmpty == false ? settings.effort : terminalDefaultEffort) ?? ""
+        }
+        return raw == EffortOption.ultracode ? "xhigh" : raw
+    }
+
+    private var thinkingEffortSuffix: String {
+        activeEffortLabel.isEmpty ? "" : "（\(activeEffortLabel)）"
     }
 
     private func scheduleIdleKill() {
@@ -208,7 +349,7 @@ final class ConversationController: Identifiable {
             streamBlockIds[index] = b.id
             mutateTurn { $0.blocks.append(b) }
             switch b.kind {
-            case .thinking: statusText = "正在思考…"
+            case .thinking: statusText = "正在思考…" + thinkingEffortSuffix
             case .text: statusText = "正在回答…"
             case .tool: statusText = "正在调用 \(b.tool?.name ?? "工具")…"
             }

@@ -10,6 +10,7 @@
   const blockCache = new Map();  // block id / group id → { key, el, live }
   const HOME = window.CS_HOME || '';
   let stick = true;
+  let activeEffort = '';   // 当前生效的思考强度（xhigh 等），流式思考行上显示，和终端「thinking with xhigh effort」一致
   let lastItem = null;
 
   const ICON_NAMES = ['terminal', 'file', 'pencil', 'search', 'globe', 'agent', 'wrench', 'sparkle', 'steps', 'chevron'];
@@ -200,8 +201,10 @@
     d.open = !b.done;
     const s = document.createElement('summary');
     // 还没有任何思考文字时不给箭头：没有可展开的东西。
+    const label = b.done ? '思考过程' : ('正在思考' + (activeEffort ? '' : '…'));
+    const effortTag = (!b.done && activeEffort) ? '<span class="effort-tag">' + activeEffort + '</span>' : '';
     s.innerHTML = icon('sparkle') +
-      '<span class="' + (b.done ? '' : 'live-text') + '">' + (b.done ? '思考过程' : '正在思考') + '</span>' +
+      '<span class="' + (b.done ? '' : 'live-text') + '">' + label + '</span>' + effortTag +
       (b.text ? '<span class="chev">' + icon('chevron') + '</span>' : '');
     d.appendChild(s);
     const body = document.createElement('div');
@@ -212,7 +215,7 @@
   }
 
   function renderBlock(b) {
-    const key = b.kind + ':' + (b.done ? 1 : 0) + ':' + b.text.length;
+    const key = b.kind + ':' + (b.done ? 1 : 0) + ':' + b.text.length + (b.kind === 'thinking' && !b.done ? ':' + activeEffort : '');
     const cached = blockCache.get(b.id);
     if (cached && cached.key === key) return cached.el;
     let el;
@@ -260,7 +263,18 @@
       el.appendChild(b);
     } else if (item.kind === 'note') {
       el.classList.add('level-' + (item.level || 'info'));
-      el.textContent = item.text;
+      if (item.level === 'recap') {
+        const tag = document.createElement('span');
+        tag.className = 'recap-tag';
+        tag.textContent = 'recap';
+        const body = document.createElement('span');
+        body.className = 'recap-body';
+        body.textContent = item.text;
+        el.appendChild(tag);
+        el.appendChild(body);
+      } else {
+        el.textContent = item.text;
+      }
     } else {
       renderAssistant(el, item);
     }
@@ -329,6 +343,7 @@
       if (el) el.remove();
       nodes.delete(id);
     },
+    setEffort(effort) { activeEffort = effort || ''; },
     setWorking(flag, text) { updateWorking(flag, text); },
     clear() { list.innerHTML = ''; nodes.clear(); blockCache.clear(); lastItem = null; },
   };

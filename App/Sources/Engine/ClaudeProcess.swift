@@ -20,7 +20,12 @@ struct LaunchConfig: Sendable {
                  "--permission-mode", permissionMode]
         a += resume ? ["--resume", sessionId] : ["--session-id", sessionId]
         if let model, !model.isEmpty { a += ["--model", model] }
-        if let effort, !effort.isEmpty { a += ["--effort", effort] }
+        if effort == EffortOption.ultracode {
+            // ultracode 不是 --effort 的取值：它是会话级设置（xhigh + 动态多代理工作流），只能走 --settings。
+            a += ["--settings", #"{"ultracode":true}"#]
+        } else if let effort, !effort.isEmpty {
+            a += ["--effort", effort]
+        }
         return a
     }
 }

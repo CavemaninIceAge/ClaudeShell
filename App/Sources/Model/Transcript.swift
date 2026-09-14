@@ -124,6 +124,7 @@ struct TranscriptBuilder: Sendable {
                 if block.kind != .tool && block.text.isEmpty { continue }
                 if block.kind == .tool { block.tool?.startedAt = date }
                 items[i].blocks.append(block)
+                items[i].rev += 1     // 旁观终端会话时条目是增量长的，网页层按 rev 重画
             }
         }
     }
@@ -135,6 +136,7 @@ struct TranscriptBuilder: Sendable {
             items[i].blocks[bi].tool?.isError = isError
             items[i].blocks[bi].tool?.done = true
             items[i].blocks[bi].tool?.endedAt = date
+            items[i].rev += 1
         }
     }
 
@@ -148,6 +150,7 @@ struct TranscriptBuilder: Sendable {
             items[i].done = true
             // 工具没等到结果（历史里被打断了）也标成完成，别一直转圈。
             for bi in items[i].blocks.indices { items[i].blocks[bi].tool?.done = true }
+            items[i].rev += 1
         }
         openTurn = nil
     }

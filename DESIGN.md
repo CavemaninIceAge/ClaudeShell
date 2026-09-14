@@ -160,7 +160,8 @@ Claude Shell 不是另一个聊天客户端，它是终端里那个 Claude Code 
 - **Body** (400, 14px, 1.6)：对话正文，列宽 780px 约等于 55 个汉字。
 - **UI** (500, 13px)：侧栏行、折叠行、审批卡标题、按钮。
 - **Chip** (500, 12px)：输入卡里的胶囊。
-- **Meta** (400, 11px)：代码块头的语言名、工具栏里的花费/模型、工具输入的小标签。
+- **Meta** (400, 11px)：代码块头的语言名、工具栏右上角的「模型 · 强度 · 花费」、工具输入的小标签。
+  macOS 26 会给工具栏项套玻璃胶囊，这一行用 `sharedBackgroundVisibility(.hidden)` 去掉（One Shadow Rule）。
 - **Code** (400, 12.5px, 1.55)：代码块；行内代码 0.86em。
 
 ### Named Rules
@@ -191,7 +192,8 @@ Claude Shell 不是另一个聊天客户端，它是终端里那个 Claude Code 
 ## Components
 
 - **Composer（输入卡）**：Paper 底 + 1px Line + 16pt 连续圆角 + 唯一的阴影。上半是 NSTextView（⏎ 发送、⇧⏎ 换行、
-  输入法组字中的回车归输入法），下半一行胶囊（目录 / 模型 / 权限 / 强度，后三枚带 ▾）+ 右侧 30pt 圆形发送键；进行中发送键变停止键。
+  输入法组字中的回车归输入法；组字期间占位符隐藏、发送键禁用），下半一行胶囊（目录 / 模型 / 权限 / 强度，后三枚带 ▾）+ 右侧 30pt 圆形发送键；进行中发送键变停止键。
+  模型与强度胶囊写的是具体生效值（`Opus 5 (1M)`、`xhigh`），不写「跟随终端设置」。
 - **Chip（胶囊）**：Chip 底、Ink secondary 字、12px/500，图标 11px SF Symbol；四枚同一渲染。
 - **Send / Stop / Primary button**：Ink 底 Paper 字，按下 75% 不透明；主按钮 8pt 圆角、13px/500。
 - **User bubble**：Bubble 底、18px 圆角、9/14 内边距、保留换行。
