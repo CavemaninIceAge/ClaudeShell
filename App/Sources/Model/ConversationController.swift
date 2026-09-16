@@ -257,6 +257,16 @@ final class ConversationController: Identifiable {
         }
     }
 
+    /// 换了账号：空闲的进程直接收掉（下次发送 `--resume` 拉起、按新账号登录），正在跑的这一轮跑完再换。
+    func dropProcess() {
+        if isWorking {
+            needsRespawn = true
+        } else {
+            process?.terminate()
+            process = nil
+        }
+    }
+
     private func settingsChanged() {
         // 进程报回来的模型是上一轮的，设置一改就不作数了，下一轮 init 会重新报。
         sessionModel = nil

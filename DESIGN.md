@@ -195,7 +195,7 @@ Claude Shell 不是另一个聊天客户端，它是终端里那个 Claude Code 
   输入法组字中的回车归输入法；组字期间占位符隐藏、发送键禁用），下半一行胶囊（目录 / 模型 / 权限 / 强度，后三枚带 ▾）+ 右侧 30pt 圆形发送键；进行中发送键变停止键。
   模型与强度胶囊写的是具体生效值（`Opus 5 (1M)`、`xhigh`），不写「跟随终端设置」。
 - **Chip（胶囊）**：Chip 底、Ink secondary 字、12px/500，图标 11px SF Symbol；四枚同一渲染。
-- **Send / Stop / Primary button**：Ink 底 Paper 字，按下 75% 不透明；主按钮 8pt 圆角、13px/500。
+- **Send / Stop / Primary button**：Ink 底 Paper 字，按下 75% 不透明、禁用 35%；主按钮 8pt 圆角、13px/500。
 - **User bubble**：Bubble 底、18px 圆角、9/14 内边距、保留换行。
 - **Assistant text**：无容器，Markdown 直接落在 Paper 上；表格 1px 网格、表头 Card 底；代码块 Code ground + 1px Line + 10px 圆角，
   头部一行语言名，"复制"悬停才现。
@@ -205,6 +205,13 @@ Claude Shell 不是另一个聊天客户端，它是终端里那个 Claude Code 
   只有"允许"是黑白主按钮。AskUserQuestion 用同一张卡，选项为单选行。
 - **Sidebar**：原生 `.sidebar` List，顶部"新对话 ⌘N"行，按项目目录分组，行只有标题（一行截断），终端里在跑的带 6pt 绿点；
   未开口的草稿不进列表。
+- **Account footer（侧栏底部账号行）**：Codex 左下角那一行的位置。22pt Chip 底圆形头像（邮箱首字母、11px/600、Ink secondary）+
+  邮箱 12.5px/500（中间截断）+ 下一行 11px Ink secondary 的「Max · 2 个账号」+ 右侧 10px `chevron.up.chevron.down`（tertiary）；
+  悬停 7pt 圆角 7% 底，整条铺 `.bar` 不透明底。点开是原生菜单：账号各一行（选中打勾、`邮箱 · Max`、⌃1…⌃9），分隔线，
+  「添加账号…」「移除账号 ▸」。切换中右侧换成 mini 转圈、副标题「正在切换…」。没有主题色，没有第二种头像画法。
+- **Login sheet（添加账号）**：460pt 宽的标准 sheet，Paper 底、20pt 内边距。标题 15px/600，说明 12.5px Ink secondary，
+  一行状态（`safari` 图标 = 等授权码、转圈 = 启动 / 保存中、warn 三角 = 失败，文字可选中），一枚等宽字的「授权码」输入框，
+  底部「重新打开登录页」/「取消」/「完成登录」（只有最后一枚是黑白主按钮，禁用时 35% 不透明）。
 - **Working line**：正文末尾 8px 脉冲点 + 13px 状态文字，只在正文里没有任何在动的块时出现（避免同屏两个指示器）。
 
 ## Do's and Don'ts

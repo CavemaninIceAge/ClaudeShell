@@ -8,7 +8,7 @@ Claude Shell ist eine kleine macOS-App, die deiner lokalen Claude-Code-CLI ein G
 
 ## Nur eine Hülle — und genau das ist der Punkt
 
-Sie setzt Claude Code nicht neu um. Kein eigener Modell-Client, keine separate Anmeldung, keine zweite Kopie deiner Daten. Sie startet dasselbe `claude`-Binary, dem du ohnehin vertraust, und liest dieselben Sitzungsdateien, die es ohnehin schreibt. Die App selbst bewahrt nur drei winzige Dinge auf — einen umbenannten Titel, ein Ausblenden-Flag und die Einstellungen pro Unterhaltung — unter `~/Library/Application Support/Claude Shell/`. Die Unterhaltungen selbst liegen immer in `~/.claude`, und nichts verlässt deinen Rechner, was die Kommandozeile nicht ohnehin senden würde.
+Sie setzt Claude Code nicht neu um. Kein eigener Modell-Client, keine separate Anmeldung, keine zweite Kopie deiner Daten. Sie startet dasselbe `claude`-Binary, dem du ohnehin vertraust, und liest dieselben Sitzungsdateien, die es ohnehin schreibt. Die App selbst bewahrt nur vier winzige Dinge auf — einen umbenannten Titel, ein Ausblenden-Flag, die Einstellungen pro Unterhaltung und die Liste deiner gespeicherten Konten (Identitäten in einer JSON-Datei, Tokens in deinem Anmelde-Schlüsselbund) — unter `~/Library/Application Support/Claude Shell/`. Die Unterhaltungen selbst liegen immer in `~/.claude`, und nichts verlässt deinen Rechner, was die Kommandozeile nicht ohnehin senden würde.
 
 So bekommst du ein echtes natives Fenster — ein Dock-Symbol, ⌘N, ein ordentliches Textfeld — ohne irgendetwas einen weiteren Blick auf deine Dateien oder Daten zu gewähren, als die Kommandozeile ihn bereits hat. Dieselbe Vertrauensgrenze, nur eine schönere Oberfläche.
 
@@ -19,6 +19,7 @@ So bekommst du ein echtes natives Fenster — ein Dock-Symbol, ⌘N, ein ordentl
 - **Zeigt, was das Terminal zeigt.** recap-Zusammenfassungen, Nachrichten aus deinen anderen Sitzungen, eingereihte Eingaben, Hinweise zur Kontextverdichtung und die Effort-Stufe in der Denkzeile.
 - **Modell und Effort explizit.** Die Pillen und die Symbolleiste zeigen stets den tatsächlich wirksamen Wert (`Opus 5 (1M) · xhigh`), auch `ultracode` — nichts versteckt hinter „Einstellungen folgen".
 - **Ein Prozess pro Unterhaltung**, warm gehalten und nach Leerlauf mit `--resume` fortgesetzt.
+- **Mehrere Konten, ein Klick zum Wechseln.** Ein zweites Claude-Konto fügst du einmal hinzu (das `claude auth login` der CLI, im Browser); danach wählst du unten in der Seitenleiste ein Konto oder drückst ⌃1…⌃9. Der Wechsel schreibt die gespeicherte Anmeldung in den Schlüsselbund-Eintrag von Claude Code selbst zurück, sodass das Terminal mitzieht — bereits laufende Sitzungen wechseln mit ihrer nächsten Anfrage, ohne Neustart, ohne Browser, ohne erneute Anmeldung.
 
 ## Starten
 
@@ -28,14 +29,14 @@ So bekommst du ein echtes natives Fenster — ein Dock-Symbol, ⌘N, ein ordentl
 ./scripts/shot.sh out.png     # Screenshot des laufenden Fensters
 ```
 
-Kurzbefehle: ⌘N neu · ⇧⌘N neu-im-Ordner · ⏎ senden · ⇧⏎ Zeilenumbruch · ⌘. stoppen · ⌘R aktualisieren.
+Kurzbefehle: ⌘N neu · ⇧⌘N neu-im-Ordner · ⏎ senden · ⇧⏎ Zeilenumbruch · ⌘. stoppen · ⌘R aktualisieren · ⌃1…⌃9 Konto wechseln.
 
 ## Unter der Haube
 
 - Swift 6 + SwiftUI + AppKit, Projekt per XcodeGen erzeugt, keine Swift-Abhängigkeiten von Dritten.
 - Der Text wird in einer `WKWebView` mit offline eingebettetem marked + highlight.js gerendert.
 - Keine Sandbox (startet einen Kindprozess und liest `~/.claude`), zum lokalen Ausführen signiert.
-- Die sitzungsübergreifende Zustellung, das stream-json-Protokoll und das Designsystem sind in `docs/` und `DESIGN.md` beschrieben.
+- Die sitzungsübergreifende Zustellung, das stream-json-Protokoll, der Kontowechsel und das Designsystem sind in `docs/` und `DESIGN.md` beschrieben.
 
 ## Aufbau
 

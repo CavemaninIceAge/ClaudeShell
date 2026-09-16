@@ -32,6 +32,9 @@ ios
 - 会话文件：`~/.claude/projects/<按规则编码的 cwd>/<sessionId>.jsonl`；标题来源依次是 custom-title → ai-title → 首条用户消息。正在终端里跑的会话记在 `~/.claude/sessions/<pid>.json`。
 - 协议要点（2026-09-13 实测）：`--permission-prompt-tool stdio` 才会把权限请求以 `control_request/can_use_tool` 发到 stdout，宿主回 `control_response`；`control_request/interrupt` 可打断；进程在多轮之间保持存活；`--resume <id>` 续接、`--session-id <uuid>` 指定新会话 id。
 - 用户会同时开着终端里的 Claude Code 和这个 app。
+- 登录态位置（2.1.273 实测）：钥匙串 `Claude Code-credentials`（账户名 `$USER`）+ `~/.claude.json` 的 `oauthAccount`；
+  设了 `CLAUDE_CONFIG_DIR` 时条目名加 `-<sha256(目录)[0..<8]>` 后缀、`.claude.json` 搬进该目录。`claude auth login` 固定走
+  「浏览器登录 → 贴授权码」流程，有无 TTY 都一样。
 
 ## Capabilities and Constraints
 
@@ -41,7 +44,13 @@ ios
 - 每对话可选：模型（跟随设置 / fable / opus / opus[1m] / sonnet / sonnet[1m] / haiku）、权限模式（auto / acceptEdits / manual / plan / bypassPermissions）、强度（默认 / low / medium / high / xhigh / max / ultracode）。改动在下一轮生效。
 - 模型和强度必须明着显示（用户 2026-09-13 要求"像终端一样 explicit"）：胶囊与工具栏写具体生效值，不写"跟随设置"这种黑盒字样；来源放悬停提示。
 - 新对话默认工作目录是家目录（和用户平时在终端启动的位置一致），可在发送第一条消息前换目录；会话开始后目录不可改（这是 Claude Code 的规则）。
-- 不做：多窗口拖拽 diff 面板、文件树、账号管理、快捷指令面板、语音。
+- 多账号（2026-09-16 用户要求「选择登录不同的账号，都保留登录态，在终端里切账号不需要通过浏览器重新登录」）：
+  每个账号的登录态存成快照（钥匙串 `Claude Shell-account-<id>` + `accounts.json` 里的身份），切换 = 写回 Claude Code
+  自己的钥匙串条目和 `~/.claude.json` 的 `oauthAccount`；终端里已经开着的会话下一次请求就用新账号（2026-09-16 实测 0.2 秒，
+  `-p` 与交互式都验过），不用重开也不用重登。添加账号走 CLI 自己的
+  `claude auth login`（临时 `CLAUDE_CONFIG_DIR`，不碰当前登录态；浏览器登录后贴授权码）。终端里 `/login` 换的账号自动收录。
+  入口：侧栏底部账号行（Codex 左下角那一行）+ 菜单栏「账号」+ ⌃1…⌃9。只支持 claude.ai 订阅账号。细节见 `docs/accounts.md`。
+- 不做：多窗口拖拽 diff 面板、文件树、快捷指令面板、语音。
 - UI 文案中文；日期不在当年的要带年份。
 - README 多语言：`README.md`（英文，GitHub 默认）+ `README.zh-Hans/zh-Hant/fr/ja/es/de.md`，顶部一行语言导航。改一处口径要各语言同步。定位口径：一个「壳」，只跑本机 `claude`、只读 `~/.claude`，不比命令行多拿任何文件/数据权限（隐私最小面）。
 - 未决：是否要把终端里的 `/` 斜杠命令做进输入框（`-p` 模式下大部分斜杠命令不可用，先不做）。

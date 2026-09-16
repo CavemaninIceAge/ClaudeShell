@@ -111,6 +111,8 @@ enum EffortOption {
 
 /// 和发送键同一材料的主按钮：黑底白字（深色反过来），不引入系统强调色。
 struct PrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 13, weight: .medium))
@@ -118,6 +120,6 @@ struct PrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.sendFill))
-            .opacity(configuration.isPressed ? 0.75 : 1)
+            .opacity(!isEnabled ? 0.35 : (configuration.isPressed ? 0.75 : 1))
     }
 }

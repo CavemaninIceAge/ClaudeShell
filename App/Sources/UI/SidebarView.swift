@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(ThreadStore.self) private var store
+    @Environment(AccountStore.self) private var accounts
     @State private var renaming: ThreadSummary? = nil
     @State private var renameText = ""
 
@@ -33,9 +34,15 @@ struct SidebarView: View {
         .searchable(text: Binding(get: { store.query }, set: { store.query = $0 }), placement: .sidebar, prompt: "搜索对话")
         .safeAreaInset(edge: .top, spacing: 0) { NewThreadButton() }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.updateStatus.failed && !store.updateBannerDismissed {
-                UpdateFailedBanner()
+            VStack(spacing: 0) {
+                if store.updateStatus.failed && !store.updateBannerDismissed {
+                    UpdateFailedBanner()
+                }
+                AccountFooter()
             }
+        }
+        .sheet(item: Binding(get: { accounts.loginSession }, set: { if $0 == nil { accounts.loginSession = nil } })) { session in
+            AccountLoginSheet(session: session)
         }
         .overlay {
             if store.groups.isEmpty {

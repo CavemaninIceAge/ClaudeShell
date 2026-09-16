@@ -146,6 +146,12 @@ final class ThreadStore {
             await MainActor.run { ThreadStore.shared.terminalDefaults = resolved }
         }
         updateStatus = UpdateStatus.read()
+        // 账号：读清单，收录当前登录的账号；切换成功后把自己起的 claude 进程收掉。
+        AccountStore.shared.load()
+        AccountStore.shared.onSwitched = { [weak self] _ in
+            self?.controllers.values.forEach { $0.dropProcess() }
+        }
+        Task { await AccountStore.shared.sync() }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { _ in
@@ -168,6 +174,16 @@ final class ThreadStore {
         let defaults = UserDefaults.standard
         if let sel = defaults.string(forKey: "testSelect"), records[sel] != nil {
             selectedId = sel
+        }
+        // -testBeginLogin 1：启动后直接弹「添加账号」面板（会真的起 claude auth login、开浏览器）。
+        if defaults.bool(forKey: "testBeginLogin") { AccountStore.shared.beginLogin() }
+        // -testSwitchAccount <accountId>：启动后切到这个账号（配合 -testClaudeConfigDir 在沙盒里验证切换）。
+        if let accountId = defaults.string(forKey: "testSwitchAccount"), !accountId.isEmpty {
+            Task {
+                await AccountStore.shared.sync()
+                await AccountStore.shared.switchTo(accountId)
+                TestLog.write("testSwitchAccount done active=\(AccountStore.shared.activeId ?? "nil") error=\(AccountStore.shared.lastError ?? "-")")
+            }
         }
         guard let prompt = defaults.string(forKey: "testPrompt"), !prompt.isEmpty, let id = selectedId else { return }
         var s = defaultSettings
@@ -207,6 +223,8 @@ final class ThreadStore {
         // 草稿一旦在磁盘上有了文件，就从草稿名单里退出。
         for id in drafts.keys where records[id] != nil { drafts[id] = nil }
         isScanning = false
+        // 终端里 /login 换过账号、或令牌刷新过，都在这一趟收进账号清单。
+        await AccountStore.shared.sync()
         TestLog.write("refresh end, records=\(records.count) drafts=\(drafts.count)")
         if let data = try? JSONEncoder.standard.encode(records) {
             try? data.write(to: cacheURL, options: .atomic)

@@ -21,11 +21,16 @@ struct ClaudeShellApp: App {
         WindowGroup {
             ContentView()
                 .environment(store)
+                .environment(AccountStore.shared)
                 .frame(minWidth: 880, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1200, height: 800)
         .commands {
+            CommandGroup(replacing: .appTermination) {
+                Button("退出 Claude Shell") { AppDelegate.quit() }
+                    .keyboardShortcut("q", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("新对话") { store.newThread() }
                     .keyboardShortcut("n", modifiers: .command)
@@ -46,12 +51,39 @@ struct ClaudeShellApp: App {
                     }
                 }
             }
+            // 账号：列出保存过的登录态，选一个就切（终端一起换）；⌃1…⌃9 直达。
+            CommandMenu("账号") {
+                AccountMenuItems()
+            }
         }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var sigterm: DispatchSourceSignal?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // `pkill` / 脚本发的 SIGTERM 也走正常退出，把 claude 子进程和登录流程收干净。
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { AppDelegate.quit() }
+        source.resume()
+        sigterm = source
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// SwiftUI 的 `.sheet` 开着时 `terminate:` 会被它按「用户取消」吞掉（⌘Q 也一样），
+    /// 所以先把登录面板收了，下一圈 run loop 再退。
+    @MainActor static func quit() {
+        if let session = AccountStore.shared.loginSession {
+            session.cancel()
+            AccountStore.shared.loginSession = nil
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        } else {
+            NSApp.terminate(nil)
+        }
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         // 点 Dock 图标：有窗口就拉到前面，没窗口交给 SwiftUI 重开。
@@ -63,6 +95,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { ThreadStore.shared.terminateAll() }
+        MainActor.assumeIsolated {
+            ThreadStore.shared.terminateAll()
+            // 登录到一半退出：把 claude auth login 收掉，它不会因为 stdin 关了自己退出。
+            AccountStore.shared.loginSession?.cancel()
+        }
     }
 }
