@@ -3,6 +3,7 @@ import SwiftUI
 struct ThreadView: View {
     let controller: ConversationController
     @Environment(ThreadStore.self) private var store
+    @State private var dropTargeted = false   // 文件 / 照片正被拖着经过正文区
 
     private var showsEmptyState: Bool {
         controller.items.isEmpty && !controller.isWorking && !controller.isLoadingHistory
@@ -12,7 +13,7 @@ struct ThreadView: View {
         ZStack {
             Theme.background.ignoresSafeArea()
             if showsEmptyState {
-                EmptyThreadView(controller: controller)
+                EmptyThreadView(controller: controller, dropTargeted: dropTargeted)
             } else {
                 VStack(spacing: 0) {
                     TranscriptWebView(controller: controller)
@@ -20,7 +21,7 @@ struct ThreadView: View {
                         ForEach(controller.pendingPermissions) { request in
                             PermissionCard(request: request, controller: controller)
                         }
-                        ComposerView(controller: controller)
+                        ComposerView(controller: controller, dropTargeted: dropTargeted)
                     }
                     .frame(maxWidth: Theme.columnWidth)
                     .padding(.horizontal, 24)
@@ -32,6 +33,10 @@ struct ThreadView: View {
             if controller.isLoadingHistory && controller.items.isEmpty {
                 ProgressView().controlSize(.small)
             }
+        }
+        // 拖到窗口正文任何位置都挂到输入框上（和 Codex 一样），不必精确拖进输入框。
+        .onDrop(of: DropHandler.types, isTargeted: $dropTargeted) { providers in
+            DropHandler.handle(providers, controller: controller)
         }
         .task { controller.loadHistoryIfNeeded() }
         .toolbar {
@@ -79,6 +84,7 @@ private struct StatusBadge: View {
 /// 新对话的首屏：和 Codex 一样，问候语 + 居中的输入卡。
 struct EmptyThreadView: View {
     let controller: ConversationController
+    var dropTargeted = false
     @Environment(ThreadStore.self) private var store
 
     var body: some View {
@@ -93,7 +99,7 @@ struct EmptyThreadView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(Theme.textSecondary)
                 }
-                ComposerView(controller: controller)
+                ComposerView(controller: controller, dropTargeted: dropTargeted)
                     .frame(maxWidth: 680)
                 if store.claudeMissing {
                     Label("没找到 claude 命令，发送会失败。请先在终端里装好 Claude Code。", systemImage: "exclamationmark.triangle")

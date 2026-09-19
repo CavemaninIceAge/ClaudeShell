@@ -137,12 +137,13 @@ final class ClaudeProcess: @unchecked Sendable {
         }
     }
 
-    func sendUser(text: String) {
+    /// images：`{"type":"image","source":{"type":"base64",…}}` 块，跟在文本块后面（2026-09-19 实测 CLI 认）。
+    func sendUser(text: String, images: [JSONValue] = []) {
         writeLine(.object([
             "type": .string("user"),
             "message": .object([
                 "role": .string("user"),
-                "content": .array([.object(["type": .string("text"), "text": .string(text)])]),
+                "content": .array([.object(["type": .string("text"), "text": .string(text)])] + images),
             ]),
         ]))
     }

@@ -63,6 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigterm: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // -testAppearance dark|light：只改本进程的外观（网页层跟着走），不动系统设置、不闪用户的屏幕。
+        if let name = UserDefaults.standard.string(forKey: "testAppearance"), !name.isEmpty {
+            NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
+        }
         // `pkill` / 脚本发的 SIGTERM 也走正常退出，把 claude 子进程和登录流程收干净。
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)

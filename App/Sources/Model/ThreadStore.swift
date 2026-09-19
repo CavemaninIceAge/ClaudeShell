@@ -137,7 +137,8 @@ final class ThreadStore {
             defaultSettings = saved
         }
         // 一进来就是一个新对话页面（和 Codex 一样）。
-        if selectedId == nil { newThread() }
+        // -testCwd <目录>：起始的新对话直接开在这个目录（scratchpad 里的会话不进侧栏列表），得在任何视图出现之前定下来。
+        if selectedId == nil { newThread(cwd: UserDefaults.standard.string(forKey: "testCwd").flatMap { $0.isEmpty ? nil : $0 }) }
         // 找 claude 要跑一次登录 shell，放后台；找到了顺手问它终端默认的模型 / 强度。
         Task.detached(priority: .utility) {
             let missing = ShellEnvironment.claudeExecutable() == nil
@@ -185,7 +186,22 @@ final class ThreadStore {
                 TestLog.write("testSwitchAccount done active=\(AccountStore.shared.activeId ?? "nil") error=\(AccountStore.shared.lastError ?? "-")")
             }
         }
-        guard let prompt = defaults.string(forKey: "testPrompt"), !prompt.isEmpty, let id = selectedId else { return }
+        guard let id = selectedId else { return }
+        // -testAttach "/a:/b"：启动后把这些文件 / 照片挂到输入框上（走 controller.attach，验附件条、发送格式与正文渲染）。
+        // -testProviderDrop "/a:/b"：同上，但经 SwiftUI onDrop 那条 NSItemProvider 路径。
+        var delay: Double = 0
+        if let paths = defaults.string(forKey: "testAttach"), !paths.isEmpty {
+            controllers[id]?.attach(urls: paths.split(separator: ":").map { URL(fileURLWithPath: String($0)) })
+            delay = 3
+        }
+        if let paths = defaults.string(forKey: "testProviderDrop"), !paths.isEmpty, let c = controllers[id] {
+            let providers = paths.split(separator: ":").compactMap { NSItemProvider(contentsOf: URL(fileURLWithPath: String($0))) }
+            TestLog.write("testProviderDrop handled=\(DropHandler.handle(providers, controller: c)) providers=\(providers.count)")
+            delay = 3
+        }
+        guard let prompt = defaults.string(forKey: "testPrompt") else { return }
+        // -testPromptDelay <秒>：等附件挂好（或输入框里的拖放 / 粘贴钩子跑完）再发；正文可以为空，只发附件。
+        delay = max(delay, defaults.double(forKey: "testPromptDelay"))
         var s = defaultSettings
         // testModel / testEffort 写 "terminal" 表示跟随终端设置（清掉本对话的指定）。
         if let model = defaults.string(forKey: "testModel"), !model.isEmpty { s.model = model == "terminal" ? nil : model }
@@ -196,8 +212,14 @@ final class ThreadStore {
         if controllers[id]?.isLiveInTerminal == true {
             // 选中的是终端里开着的会话：等历史读完再投递，看那边回答能不能同步回来。
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(max(2, delay)))
                 self?.controllers[id]?.sendToTerminal(prompt)
+            }
+        } else if delay > 0 {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                TestLog.write("testPrompt send with \(self?.controllers[id]?.attachments.count ?? -1) attachments")
+                self?.controllers[id]?.send(prompt)
             }
         } else {
             controllers[id]?.send(prompt)

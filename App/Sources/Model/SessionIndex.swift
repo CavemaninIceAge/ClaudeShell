@@ -75,32 +75,41 @@ enum SessionIndex {
     // MARK: - 单个文件
 
     private static let headBytes = 512 * 1024
+    private static let headMaxBytes = 16 * 1024 * 1024
     private static let tailBytes = 256 * 1024
 
     private static func parse(file: URL, id: String, size: Int, mtime: Date) -> SessionRecord? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
 
-        let head = (try? handle.read(upToCount: headBytes)) ?? Data()
-        var tail = Data()
-        if size > headBytes {
-            try? handle.seek(toOffset: UInt64(max(0, size - tailBytes)))
-            tail = (try? handle.readToEnd()) ?? Data()
-        }
-
         var cwd: String? = nil
         var firstPrompt: String? = nil
         var createdAt: Date? = nil
-        for line in lines(of: head) {
-            // 先做便宜的字符串筛选，再解析 JSON。
-            guard line.contains("\"type\":\"user\"") else { continue }
-            guard let v = JSONValue.parse(line) else { continue }
-            if v["isMeta"]?.bool == true || v["isSidechain"]?.bool == true { continue }
-            if cwd == nil { cwd = v["cwd"]?.string }
-            guard let text = userText(v["message"]?["content"]), isRealPrompt(text) else { continue }
-            firstPrompt = text
-            createdAt = parseDate(v["timestamp"]?.string)
-            break
+        // 首条消息带图片时一行就有几 MB，512 KB 里截不到完整的一行；按块往下读，直到读到首条真正的用户消息。
+        var head = Data()
+        var seen = 0
+        scan: while head.count < headMaxBytes {
+            guard let chunk = try? handle.read(upToCount: headBytes), !chunk.isEmpty else { break }
+            head.append(chunk)
+            var ls = lines(of: head)
+            if chunk.count == headBytes, !ls.isEmpty { ls.removeLast() }   // 最后一行可能还没读完
+            for line in ls.dropFirst(seen) {
+                // 先做便宜的字符串筛选，再解析 JSON。
+                guard line.contains("\"type\":\"user\"") else { continue }
+                guard let v = JSONValue.parse(line) else { continue }
+                if v["isMeta"]?.bool == true || v["isSidechain"]?.bool == true { continue }
+                if cwd == nil { cwd = v["cwd"]?.string }
+                guard let text = userText(v["message"]?["content"]), isRealPrompt(text) else { continue }
+                firstPrompt = text
+                createdAt = parseDate(v["timestamp"]?.string)
+                break scan
+            }
+            seen = ls.count
+        }
+        var tail = Data()
+        if size > head.count {
+            try? handle.seek(toOffset: UInt64(max(head.count, size - tailBytes)))
+            tail = (try? handle.readToEnd()) ?? Data()
         }
         guard let cwd, let firstPrompt else { return nil }
         // 临时目录里的会话（工作流、探针）不进列表。

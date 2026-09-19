@@ -110,3 +110,35 @@ messagingSocketPath, name`。只有 `entrypoint == "cli"` 才是终端里开着�
 - 终端那边空闲时消息直接开一轮；忙着时在两次工具调用之间送到（`absorbed_mid_turn`，见上面的 `attachment`）。
   终端里显示为一行 `› Message from @Claude Shell: 首行…`，ctrl+o 看全文。
 - 同一会话短时间连发有限流（桶 30、每秒回 0.5），30 秒内完全相同的正文会被当重复丢掉。
+
+## 附件：图片 / 文件 / 目录（2026-09-19 在 2.1.273 上实测）
+
+app 里的组装在 `App/Sources/Model/Attachments.swift`（`OutgoingMessage` 发、`UserMessageParser` 回放）。
+
+- **图片**：stream-json 的 user 消息 content 里跟 `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}`
+  块即可，CLI 原样交给模型（haiku 能认出图里的字）。会话文件里这条 `user` 记录带 `imagePasteIds`（CLI 自己的编号，不是我们写的
+  `#N`），后面还跟一条 `isMeta: true, turnCompanion: true` 的记录（`[Image: source: …/images/3.png]`），回放时按 isMeta 跳过。
+  终端里粘贴图片的记录格式一样：text 块里是 `[Image #22] 这是啥`，image 块跟在后面。
+- **`@` 引用**：正文里写 `@"绝对路径"`（带引号；空格用反斜杠转义不行），CLI 会在会话文件里落一条 `attachment.type == "file"`
+  （文本文件 `content.type == "text"`；图片 `content.type == "image"`，也能给模型看）或 `"directory"`（目录列表）。
+  PDF、二进制文件不附、也不报错，模型只看到路径，自己用 Read 去读。位置随意（行首、行中、末尾另起一行都认）。
+  **消息里一旦带了 image 块，`@` 引用整个不处理**——所以图片和文件混发时，文件只剩路径，Claude 得多一次 Read。
+- **投进终端的会话**（跨会话消息）只能带文字，图片也按 `@"路径"` 引用；没有路径的（剪贴板贴的）先写到
+  `~/Library/Caches/Claude Shell/pasted/<id>.png`。这条路径没有实测过（会打扰用户正在跑的终端会话）。
+- **侧栏索引**：`SessionIndex.parse` 原来只读文件头 512 KB，首条消息带图片时一行就有 1 MB 以上，截不到完整的一行，整个会话不进列表。
+  现在按 512 KB 一块往下读到首条真正的用户消息为止（上限 16 MB）；这一改让用户已有的 5 个终端会话（首条就贴了图）也进了列表。
+
+自动化验证（都不发全局键鼠事件，窗口在别的桌面上也能跑）：
+
+```
+open -n "Claude Shell.app" --args -testLog 1 -testCwd <scratchpad 目录> -testModel haiku \
+  -testDropFiles "/a.heic:/b.txt:/dir"  # 进程内造 NSDraggingInfo 喂给输入框（draggingEntered → performDragOperation）
+  -testDropImage /x.png                  # 图片字节拖进输入框（浏览器拖图那种）
+  -testPasteFiles "/a:/b" -testPasteImage /x.png   # ⌘V 路径，用私有剪贴板，不动用户剪贴板
+  -testProviderDrop "/a:/b"             # SwiftUI onDrop 那条 NSItemProvider 路径（窗口正文区）
+  -testAttach "/a:/b"                    # 直接 controller.attach
+  -testPrompt "…" -testPromptDelay 6     # 等附件挂好再发
+  -testWebSnapshot /out.png [-testScrollTo ".att-image"]   # 网页层自截图：窗口不在当前桌面时 WebKit 不往窗口画，
+                                                            # screencapture 拿到的正文是空白，只有 takeSnapshot 靠得住
+  -testAppearance dark                   # 只改本进程外观
+```

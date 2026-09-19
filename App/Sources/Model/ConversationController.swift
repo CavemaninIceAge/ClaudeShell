@@ -40,6 +40,8 @@ final class ConversationController: Identifiable {
     private(set) var fileModel: String? = nil
     /// 终端默认强度，ThreadStore 探到后灌进来：本对话没显式选强度时，思考 shimmer 用它。
     var terminalDefaultEffort: String? = nil
+    /// 输入框里挂着、还没发出去的附件（拖 / 贴 / 「+」选进来的），随对话走，切换对话不丢。
+    private(set) var attachments: [ComposerAttachment] = []
     var settings: ThreadSettings {
         didSet { if settings != oldValue { settingsChanged() } }
     }
@@ -149,20 +151,24 @@ final class ConversationController: Identifiable {
     }
 
     /// 把这句话投进终端里正在跑的这个会话：那边的 Claude 会在终端里回答，回答再经 tail 同步回来。
+    /// 这条协议只能带文字，附件（包括图片）都按路径引用，终端那边的 Claude 自己去读。
     func sendToTerminal(_ rawText: String) {
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, isLiveInTerminal, !isLoadingHistory else { return }
+        let typed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty || !attachments.isEmpty, isLiveInTerminal, !isLoadingHistory else { return }
         guard let target = PeerMessenger.target(forSessionId: id) else {
             working.append(.note(PeerMessenger.SendError.notFound.localizedDescription, level: "error"))
             publish()
             return
         }
+        let outgoing = OutgoingMessage(text: typed, attachments: attachments, inlineImages: false)
+        attachments = []
+        let text = outgoing.wireText
         let body = PeerMessenger.body(forUserText: text)
         if reader != nil {
-            reader?.expectEcho(display: text, body: body, at: Date())
+            reader?.expectEcho(display: outgoing.displayText, attachments: outgoing.attachments, body: body, at: Date())
             working = reader?.items ?? working
         } else {
-            working.append(.user(text, at: Date()))
+            working.append(.user(outgoing.displayText, attachments: outgoing.attachments, at: Date()))
         }
         publish()
         Task.detached(priority: .userInitiated) { [weak self] in
@@ -179,13 +185,45 @@ final class ConversationController: Identifiable {
         }
     }
 
+    // MARK: - 附件
+
+    /// 拖 / 贴 / 选进来的文件：图片在这里就读进内存、按上限缩好（读盘和转码放后台，大照片也不卡输入框）。
+    func attach(urls: [URL]) {
+        let files = urls.filter { $0.isFileURL }
+        guard !files.isEmpty else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let made = files.map { AttachmentMaker.make(url: $0) }
+            await MainActor.run { self?.append(made) }
+        }
+    }
+
+    func attach(imageData: Data, name: String) {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let a = AttachmentMaker.make(imageData: imageData, name: name) else { return }
+            await MainActor.run { self?.append([a]) }
+        }
+    }
+
+    private func append(_ new: [ComposerAttachment]) {
+        // 同一个文件拖两次只算一次。
+        let paths = Set(attachments.compactMap(\.path))
+        attachments += new.filter { $0.path == nil || !paths.contains($0.path!) }
+        TestLog.write("attachments: \(attachments.map { "\($0.kind) \($0.name)" })")
+    }
+
+    func removeAttachment(_ id: String) {
+        attachments.removeAll { $0.id == id }
+    }
+
     // MARK: - 发送 / 停止 / 审批
 
     func send(_ rawText: String) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, canSend else { return }
+        guard !text.isEmpty || !attachments.isEmpty, canSend else { return }
         let isFirst = !hasSessionFile && working.isEmpty
-        working.append(.user(text, at: Date()))
+        let outgoing = OutgoingMessage(text: text, attachments: attachments, inlineImages: true)
+        attachments = []
+        working.append(.user(outgoing.displayText, attachments: outgoing.attachments, at: Date()))
         isWorking = true
         statusText = "正在思考…" + thinkingEffortSuffix
         idleTask?.cancel()
@@ -196,9 +234,9 @@ final class ConversationController: Identifiable {
             fail(error.localizedDescription)
             return
         }
-        process?.sendUser(text: text)
+        process?.sendUser(text: outgoing.wireText, images: outgoing.imageBlocks)
         hasSessionFile = true
-        if isFirst { onFirstMessage?(self, text) }
+        if isFirst { onFirstMessage?(self, outgoing.titleText) }
     }
 
     func stop() {

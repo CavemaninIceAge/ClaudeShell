@@ -13,7 +13,7 @@
   let activeEffort = '';   // 当前生效的思考强度（xhigh 等），流式思考行上显示，和终端「thinking with xhigh effort」一致
   let lastItem = null;
 
-  const ICON_NAMES = ['terminal', 'file', 'pencil', 'search', 'globe', 'agent', 'wrench', 'sparkle', 'steps', 'chevron'];
+  const ICON_NAMES = ['terminal', 'file', 'pencil', 'search', 'globe', 'agent', 'wrench', 'sparkle', 'steps', 'chevron', 'folder', 'photo'];
   const icon = (name) => '<span class="icon icon-' + (ICON_NAMES.includes(name) ? name : 'wrench') + '"></span>';
 
 
@@ -257,10 +257,17 @@
     el.className = 'item ' + item.kind;
     el.dataset.id = item.id;
     if (item.kind === 'user') {
-      const b = document.createElement('div');
-      b.className = 'bubble';
-      b.textContent = item.text;
-      el.appendChild(b);
+      const wrap = document.createElement('div');
+      wrap.className = 'user-wrap';
+      const atts = item.attachments || [];
+      if (atts.length) wrap.appendChild(renderAttachments(atts));
+      if (item.text) {
+        const b = document.createElement('div');
+        b.className = 'bubble';
+        b.textContent = item.text;
+        wrap.appendChild(b);
+      }
+      el.appendChild(wrap);
     } else if (item.kind === 'note') {
       el.classList.add('level-' + (item.level || 'info'));
       if (item.level === 'recap') {
@@ -281,6 +288,33 @@
     return el;
   }
 
+  // 用户消息上挂的附件：图片缩略图、文件 / 目录小片。有路径的点开走 Finder 默认程序。
+  function renderAttachments(atts) {
+    const row = document.createElement('div');
+    row.className = 'attachments';
+    for (const a of atts) {
+      let node;
+      if (a.kind === 'image' && a.preview) {
+        node = document.createElement('img');
+        node.className = 'att-image';
+        node.src = a.preview;
+        node.alt = a.name || '';
+      } else {
+        node = document.createElement('span');
+        node.className = 'att-file';
+        node.innerHTML = icon(a.kind === 'directory' ? 'folder' : (a.kind === 'image' ? 'photo' : 'file'))
+          + '<span class="att-name">' + escapeHtml(a.name || '') + '</span>';
+      }
+      node.title = a.path ? shortPath(a.path) : (a.name || '');
+      if (a.path) {
+        node.dataset.path = a.path;
+        node.classList.add('openable');
+      }
+      row.appendChild(node);
+    }
+    return row;
+  }
+
   function maybeScroll() {
     if (!stick) return;
     requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight));
@@ -296,6 +330,11 @@
     if (a) {
       e.preventDefault();
       post({ type: 'open', url: a.href });
+      return;
+    }
+    const att = e.target.closest('.openable[data-path]');
+    if (att) {
+      post({ type: 'open', url: 'file://' + encodeURI(att.dataset.path) });
       return;
     }
     const btn = e.target.closest('button[data-copy]');
@@ -348,5 +387,7 @@
     clear() { list.innerHTML = ''; nodes.clear(); blockCache.clear(); lastItem = null; },
   };
 
+  // 脚本里抛了异常 Swift 侧才看得见（-testLog 启动时写进日志）。
+  window.addEventListener('error', (e) => post({ type: 'log', text: 'error: ' + e.message + ' @' + e.lineno }));
   post({ type: 'ready' });
 })();

@@ -194,6 +194,14 @@ Claude Shell 不是另一个聊天客户端，它是终端里那个 Claude Code 
 - **Composer（输入卡）**：Paper 底 + 1px Line + 16pt 连续圆角 + 唯一的阴影。上半是 NSTextView（⏎ 发送、⇧⏎ 换行、
   输入法组字中的回车归输入法；组字期间占位符隐藏、发送键禁用），下半一行胶囊（目录 / 模型 / 权限 / 强度，后三枚带 ▾）+ 右侧 30pt 圆形发送键；进行中发送键变停止键。
   模型与强度胶囊写的是具体生效值（`Opus 5 (1M)`、`xhigh`），不写「跟随终端设置」。
+  胶囊行最左是 26pt 的圆形「+」（Chip 底，Codex 输入框左下角那个），选文件 / 照片 / 目录挂到这条消息上。
+  拖着文件经过正文区或输入卡时，输入卡描边换成 Ink、1.5px（唯一的拖放提示，不加虚线框、不变底色）。
+- **Attachment strip（附件条）**：输入卡顶上一排、横向可滚：图片是 56pt 方缩略图（10pt 圆角、1px Line、fill 裁切），
+  文件 / 目录是 40pt 高的小片（Chip 底、SF Symbol `doc.text` / `folder` + 名字 12px/500 + 扩展名 10px secondary，最宽 220），
+  悬停时右上角露出 16pt 的 Ink 圆「×」。
+- **User bubble 上的附件**：气泡上方、同样靠右：图片缩略图 120px 高、最宽 260、12px 圆角、1px Line；
+  文件 / 目录是 Bubble 底 12px 圆角的小片，图标 + 名字（同一套导出的 SF Symbol 蒙版：`file` / `folder` / `photo`）。
+  有路径的点开走 Finder 默认程序。只有附件没打字时不画空气泡。
 - **Chip（胶囊）**：Chip 底、Ink secondary 字、12px/500，图标 11px SF Symbol；四枚同一渲染。
 - **Send / Stop / Primary button**：Ink 底 Paper 字，按下 75% 不透明、禁用 35%；主按钮 8pt 圆角、13px/500。
 - **User bubble**：Bubble 底、18px 圆角、9/14 内边距、保留换行。

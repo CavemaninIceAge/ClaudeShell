@@ -43,6 +43,7 @@ struct TranscriptWebView: NSViewRepresentable {
         private var ready = false
         private var sentRevs: [String: Int] = [:]
         private var pending: (items: [TranscriptItem], working: Bool, status: String, effort: String)?
+        private var snapshotTask: Task<Void, Never>?
 
         func sync(items: [TranscriptItem], working: Bool, status: String, effort: String) {
             guard ready, let web = webView else {
@@ -67,13 +68,44 @@ struct TranscriptWebView: NSViewRepresentable {
             if UserDefaults.standard.bool(forKey: "testExpandAll") {
                 js += "document.querySelectorAll('details').forEach(function (d) { d.open = true; });"
             }
-            web.evaluateJavaScript(js) { _, _ in }
+            web.evaluateJavaScript(js) { _, error in
+                if let error { TestLog.write("web eval error: \(error.localizedDescription)") }
+            }
+            // -testWebSnapshot <png 路径>：每次同步后把网页层自己截下来。窗口在别的桌面时 WebKit 不往窗口画，
+            // screencapture 拿到的正文是空白；takeSnapshot 不受这个限制，验证正文渲染用它。
+            if !working, !items.isEmpty, let path = UserDefaults.standard.string(forKey: "testWebSnapshot"), !path.isEmpty {
+                snapshotTask?.cancel()
+                snapshotTask = Task { [weak web] in
+                    try? await Task.sleep(for: .seconds(1))
+                    guard !Task.isCancelled, let web else { return }
+                    // -testScrollTo <css 选择器>：先把那个元素滚到视口中间再截（长对话里看某一条）。
+                    if let sel = UserDefaults.standard.string(forKey: "testScrollTo"), !sel.isEmpty {
+                        let js = "(function(){var e=document.querySelector(\(JSONValue.string(sel).serialized()));if(e)e.scrollIntoView({block:'center'});return !!e;})()"
+                        let found = try? await web.evaluateJavaScript(js)
+                        TestLog.write("testScrollTo \(sel): \(String(describing: found))")
+                        try? await Task.sleep(for: .milliseconds(300))
+                    }
+                    let cfg = WKSnapshotConfiguration()
+                    cfg.rect = CGRect(origin: .zero, size: web.bounds.size)
+                    web.takeSnapshot(with: cfg) { image, error in
+                        guard let image, let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                              let png = rep.representation(using: .png, properties: [:]) else {
+                            TestLog.write("web snapshot failed: \(error?.localizedDescription ?? "?")"); return
+                        }
+                        try? png.write(to: URL(fileURLWithPath: path))
+                        TestLog.write("web snapshot -> \(path) \(Int(image.size.width))x\(Int(image.size.height))")
+                    }
+                }
+            }
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
             switch type {
+            case "log":
+                TestLog.write("web: \(body["text"] as? String ?? "")")
             case "ready":
+                TestLog.write("web ready")
                 ready = true
                 if let p = pending {
                     pending = nil

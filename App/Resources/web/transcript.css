@@ -88,10 +88,35 @@ a:hover { text-decoration-color: var(--fg); }
 /* 各图标的 mask-image 在生成的 icons.css 里。 */
 #list { display: flex; flex-direction: column; gap: 22px; }
 
-/* 用户消息：右侧的灰色圆角块 */
+/* 用户消息：右侧的灰色圆角块；附件（图片缩略图 / 文件片）挂在它上面，一样靠右 */
 .item.user { display: flex; justify-content: flex-end; }
+.item.user .user-wrap { max-width: 78%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+.attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
+.att-image {
+  display: block;
+  height: 120px;
+  max-width: 260px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.att-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  padding: 7px 11px;
+  border-radius: 12px;
+  background: var(--bubble);
+  font-size: 13px;
+  color: var(--fg);
+}
+.att-file .icon { flex: none; color: var(--fg-2); }
+.att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.openable { cursor: pointer; }
 .item.user .bubble {
-  max-width: 78%;
+  max-width: 100%;
   background: var(--bubble);
   border-radius: 18px;
   padding: 9px 14px;

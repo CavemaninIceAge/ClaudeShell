@@ -8,7 +8,7 @@ try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: t
 let symbols: [(String, String)] = [
     ("terminal", "terminal"), ("file", "doc.text"), ("pencil", "pencil.line"), ("search", "magnifyingglass"),
     ("globe", "globe"), ("agent", "person.2"), ("wrench", "wrench.and.screwdriver"), ("sparkle", "sparkles"),
-    ("steps", "list.bullet"), ("chevron", "chevron.right"),
+    ("steps", "list.bullet"), ("chevron", "chevron.right"), ("folder", "folder"), ("photo", "photo"),
 ]
 let scale: CGFloat = 4
 let canvas: CGFloat = 20

@@ -38,10 +38,11 @@ struct TranscriptItem: Sendable, Codable, Equatable, Identifiable {
     var level: String? = nil          // note 用：info | warn | error
     var timestamp: Date? = nil
     var meta: TurnMeta? = nil
+    var attachments: [TranscriptAttachment] = []   // user 用：拖 / 贴进来的图片和文件
     var rev = 0                       // 每次改动 +1，网页层按它判断要不要重画
 
-    static func user(_ text: String, at date: Date? = nil) -> TranscriptItem {
-        TranscriptItem(id: "u-" + UUID().uuidString.lowercased(), kind: .user, text: text, timestamp: date)
+    static func user(_ text: String, attachments: [TranscriptAttachment] = [], at date: Date? = nil) -> TranscriptItem {
+        TranscriptItem(id: "u-" + UUID().uuidString.lowercased(), kind: .user, text: text, timestamp: date, attachments: attachments)
     }
 
     static func note(_ text: String, level: String = "info") -> TranscriptItem {
@@ -107,9 +108,9 @@ struct TranscriptBuilder: Sendable {
     private(set) var items: [TranscriptItem] = []
     private var openTurn: Int? = nil
 
-    mutating func addUser(text: String, at date: Date?) {
+    mutating func addUser(text: String, attachments: [TranscriptAttachment] = [], at date: Date?) {
         closeTurn()
-        items.append(.user(text, at: date))
+        items.append(.user(text, attachments: attachments, at: date))
     }
 
     mutating func addAssistant(content: [JSONValue], at date: Date?) {

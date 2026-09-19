@@ -29,6 +29,16 @@
     { id: 't2', kind: 'thinking', text: '', done: false },
   ]}, 2);
   CS.upsert({ id: 'n1', kind: 'note', text: '已停止', level: 'info', done: true }, 3);
+  // 带附件的用户消息：图片缩略图 + 文件片 + 目录片；只有附件、没打字的也要能看。
+  const dot = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  CS.upsert({ id: 'u2', kind: 'user', text: '这张图和这份文档说明了什么？', done: true, attachments: [
+    { kind: 'image', name: 'photo.jpg', path: '/Users/x/Desktop/photo.jpg', preview: dot },
+    { kind: 'file', name: '说明 文档.txt', path: '/Users/x/Desktop/说明 文档.txt' },
+    { kind: 'directory', name: '一个目录', path: '/Users/x/Desktop/一个目录' },
+  ]}, 4);
+  CS.upsert({ id: 'u3', kind: 'user', text: '', done: true, attachments: [
+    { kind: 'image', name: '剪贴板图片.png', preview: dot },
+  ]}, 5);
   document.querySelectorAll('details').forEach((d) => { d.open = true; });
 </script>
 </body>

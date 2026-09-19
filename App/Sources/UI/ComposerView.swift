@@ -1,21 +1,28 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// 底部的输入卡：多行文本 + 目录 / 模型 / 权限 / 强度四枚胶囊 + 发送（或停止）键。
+/// 底部的输入卡：附件条 + 多行文本 + 「+」/ 目录 / 模型 / 权限 / 强度胶囊 + 发送（或停止）键。
+/// 文件 / 照片可以拖进来、⌘V 贴进来、或点「+」选；整张卡（连同外面的正文区）都是拖放目标。
 struct ComposerView: View {
     let controller: ConversationController
+    var dropTargeted = false                  // 外层正文区正被拖着东西经过（ThreadView 报进来）
     @Environment(ThreadStore.self) private var store
     @State private var text = ""
     @State private var isComposing = false   // 输入法正在组字（text 只含已上屏的字）
     @State private var editorHeight: CGFloat = 22
+    @State private var editorDropTargeted = false
 
     private var liveInTerminal: Bool { controller.isLiveInTerminal }
 
     private var canSend: Bool {
         let hasText = !isComposing && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasContent = hasText || (!isComposing && !controller.attachments.isEmpty)
         // 终端里开着的会话：这里发的话投进终端去，那边忙着也行（会在两次工具调用之间送到）。
-        return hasText && (liveInTerminal ? !controller.isLoadingHistory : controller.canSend)
+        return hasContent && (liveInTerminal ? !controller.isLoadingHistory : controller.canSend)
     }
+
+    private var highlightDrop: Bool { dropTargeted || editorDropTargeted }
 
     private var placeholder: String {
         liveInTerminal ? "发到终端里的这个对话，那边的 Claude 回答后这里同步显示" : "问 Claude 任何事"
@@ -54,7 +61,13 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit)
+            if !controller.attachments.isEmpty {
+                AttachmentStrip(attachments: controller.attachments) { controller.removeAttachment($0) }
+            }
+            ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
+                             onDropFiles: { controller.attach(urls: $0) },
+                             onDropImage: { controller.attach(imageData: $0, name: $1) },
+                             onDropTargeted: { editorDropTargeted = $0 })
                 .frame(height: min(max(editorHeight, 22), 220))
                 .overlay(alignment: .topLeading) {
                     if text.isEmpty && !isComposing {
@@ -67,6 +80,7 @@ struct ComposerView: View {
                     }
                 }
             HStack(spacing: 6) {
+                attachButton
                 folderChip
                 settingsMenu(icon: "cpu", title: effective.modelName ?? "跟随终端设置", help: modelHelp,
                              options: modelOptions, selection: controller.settings.model ?? "") { new in
@@ -111,8 +125,10 @@ struct ComposerView: View {
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.composerFill))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.line, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(highlightDrop ? Theme.textPrimary : Theme.line, lineWidth: highlightDrop ? 1.5 : 1))
         .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
+        .animation(.easeOut(duration: 0.12), value: highlightDrop)
     }
 
     private func submit() {
@@ -125,6 +141,28 @@ struct ComposerView: View {
         } else {
             controller.send(t)
         }
+    }
+
+    /// Codex 输入框左下角那个「+」：选文件 / 照片 / 目录挂到这条消息上。
+    private var attachButton: some View {
+        Button {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = true
+            panel.prompt = "添加"
+            panel.message = "选要发给 Claude 的文件、照片或目录"
+            if panel.runModal() == .OK { controller.attach(urls: panel.urls) }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.textSecondary)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Theme.chipFill))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("添加文件、照片或目录（也可以直接拖进来、⌘V 粘贴）")
     }
 
     // 目录只能在第一条消息之前换：会话一旦开始，cwd 就是 Claude Code 的会话属性了。
@@ -208,6 +246,9 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var isComposing: Bool
     @Binding var height: CGFloat
     var onSubmit: () -> Void
+    var onDropFiles: ([URL]) -> Void = { _ in }
+    var onDropImage: (Data, String) -> Void = { _, _ in }
+    var onDropTargeted: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -233,6 +274,9 @@ struct ComposerTextView: NSViewRepresentable {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.onSubmit = { [weak coordinator = context.coordinator] in coordinator?.parent.onSubmit() }
         textView.onCompositionChange = { [weak coordinator = context.coordinator] in coordinator?.compositionDidChange() }
+        textView.onDropFiles = { [weak coordinator = context.coordinator] in coordinator?.parent.onDropFiles($0) }
+        textView.onDropImage = { [weak coordinator = context.coordinator] in coordinator?.parent.onDropImage($0, $1) }
+        textView.onDropTargeted = { [weak coordinator = context.coordinator] in coordinator?.parent.onDropTargeted($0) }
 
         let scroll = NSScrollView()
         scroll.documentView = textView
@@ -256,6 +300,41 @@ struct ComposerTextView: NSViewRepresentable {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 4.5) { [weak textView] in
                     textView?.insertText(commit, replacementRange: notFound)
                 }
+            }
+        }
+        // 拖放 / 粘贴的自动化验证：不发全局键鼠事件，在进程内造一个 NSDraggingInfo / 私有剪贴板喂给同一套代码。
+        //   -testDropFiles "/a:/b"   文件拖进输入框（draggingEntered → performDragOperation）
+        //   -testDropImage "/x.png"  图片字节拖进输入框（浏览器拖图那种，没有文件路径）
+        //   -testPasteFiles "/a:/b"  Finder 里 ⌘C 的文件 ⌘V 进来
+        //   -testPasteImage "/x.png" 截图 / 浏览器复制的图片 ⌘V 进来
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak textView] in
+            guard let textView else { return }
+            let d = UserDefaults.standard
+            func urls(_ key: String) -> [URL] {
+                (d.string(forKey: key) ?? "").split(separator: ":").map { URL(fileURLWithPath: String($0)) }
+            }
+            func imageData(_ key: String) -> Data? {
+                d.string(forKey: key).flatMap { $0.isEmpty ? nil : try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+            }
+            let drop = NSPasteboard(name: NSPasteboard.Name("claude-shell-test-drop"))
+            drop.clearContents()
+            if !urls("testDropFiles").isEmpty { drop.writeObjects(urls("testDropFiles") as [NSURL]) }
+            if let png = imageData("testDropImage") { drop.setData(png, forType: .png) }
+            if drop.types?.isEmpty == false {
+                let info = TestDraggingInfo(pasteboard: drop)
+                let op = textView.draggingEntered(info)
+                let ok = textView.performDragOperation(info)
+                TestLog.write("testDrop entered=\(op.rawValue) performed=\(ok)")
+            }
+            let paste = NSPasteboard(name: NSPasteboard.Name("claude-shell-test-paste"))
+            paste.clearContents()
+            if !urls("testPasteFiles").isEmpty { paste.writeObjects(urls("testPasteFiles") as [NSURL]) }
+            if let png = imageData("testPasteImage") { paste.setData(png, forType: .png) }
+            if paste.types?.isEmpty == false {
+                textView.pasteboardForPaste = paste
+                textView.paste(nil)
+                textView.pasteboardForPaste = .general
+                TestLog.write("testPaste done")
             }
         }
         return scroll
@@ -327,6 +406,83 @@ struct ComposerTextView: NSViewRepresentable {
 final class SubmitTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCompositionChange: (() -> Void)?
+    var onDropFiles: (([URL]) -> Void)?
+    var onDropImage: ((Data, String) -> Void)?
+    var onDropTargeted: ((Bool) -> Void)?
+
+    // MARK: 拖放 / 粘贴：文件和图片不进正文，交给附件条；NSTextView 默认会把拖进来的文件路径当文字插进去。
+
+    private static let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
+
+    private func fileURLs(on pb: NSPasteboard) -> [URL] {
+        (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    private func imageData(on pb: NSPasteboard) -> Data? {
+        for t in Self.imageTypes { if let d = pb.data(forType: t) { return d } }
+        return nil
+    }
+
+    private func hasAttachable(_ pb: NSPasteboard) -> Bool {
+        !fileURLs(on: pb).isEmpty || imageData(on: pb) != nil
+    }
+
+    /// 取走了就返回 true；否则由调用方交给 NSTextView 自己处理（普通文字）。
+    /// textWins：剪贴板同时有文字和图片（Excel / Numbers 复制单元格会附一张渲染图）时按文字贴。
+    @discardableResult
+    private func takeAttachments(from pb: NSPasteboard, source: String, textWins: Bool = false) -> Bool {
+        let urls = fileURLs(on: pb)
+        if !urls.isEmpty {
+            TestLog.write("composer \(source) files: \(urls.map(\.path))")
+            onDropFiles?(urls)
+            return true
+        }
+        if textWins, pb.string(forType: .string) != nil { return false }
+        if let data = imageData(on: pb) {
+            TestLog.write("composer \(source) image: \(data.count) bytes")
+            onDropImage?(data, source == "paste" ? "剪贴板图片.png" : "拖入的图片.png")
+            return true
+        }
+        return false
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard hasAttachable(sender.draggingPasteboard) else { return super.draggingEntered(sender) }
+        onDropTargeted?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        hasAttachable(sender.draggingPasteboard) ? .copy : super.draggingUpdated(sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.draggingExited(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hasAttachable(sender.draggingPasteboard) ? true : super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDropTargeted?(false)
+        if takeAttachments(from: sender.draggingPasteboard, source: "drop") { return true }
+        return super.performDragOperation(sender)
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        onDropTargeted?(false)
+        super.concludeDragOperation(sender)
+    }
+
+    var pasteboardForPaste: NSPasteboard = .general   // 测试钩子换成私有剪贴板，不动用户的剪贴板
+
+    override func paste(_ sender: Any?) {
+        // Finder 里 ⌘C 的文件、截图 / 浏览器复制的图片：挂成附件；别的照常贴文字。
+        if takeAttachments(from: pasteboardForPaste, source: "paste", textWins: true) { return }
+        super.paste(sender)
+    }
 
     // 输入法组字（拼音上屏前）不走 textDidChange，得自己报。
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -352,4 +508,28 @@ final class SubmitTextView: NSTextView {
         }
         super.doCommand(by: selector)
     }
+}
+
+/// 测试钩子用的假拖放信息：只有剪贴板是真的，位置 / 图像都随便填。
+final class TestDraggingInfo: NSObject, NSDraggingInfo {
+    let pasteboard: NSPasteboard
+    init(pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
+
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pasteboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation { get { .default } set {} }
+    var animatesToDestination: Bool { get { false } set {} }
+    var numberOfValidItemsForDrop: Int { get { 1 } set {} }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    func resetSpringLoading() {}
 }

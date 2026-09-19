@@ -46,8 +46,8 @@ struct SessionReader: Sendable {
     mutating func finishedItems() -> [TranscriptItem] { builder.finish() }
 
     /// app 自己刚投进终端的一句话：本地先显示（display），文件里那条对应记录（正文是 body）到了就跳过。
-    mutating func expectEcho(display: String, body: String, at date: Date) {
-        builder.addUser(text: display, at: date)
+    mutating func expectEcho(display: String, attachments: [TranscriptAttachment] = [], body: String, at date: Date) {
+        builder.addUser(text: display, attachments: attachments, at: date)
         expectedEchoes.append(body.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
@@ -80,7 +80,9 @@ struct SessionReader: Sendable {
             if t.hasPrefix("[Request interrupted") {
                 builder.addNote("已打断", level: "info")
             } else if SessionIndex.isRealPrompt(t) {
-                builder.addUser(text: SessionReader.stripReminders(t), at: stamp)
+                // 终端里粘贴的图片是 image 块；本 app 发的附件写在正文末尾几行。都拆成缩略图 / 文件片挂在消息上。
+                let parsed = UserMessageParser.parse(text: SessionReader.stripReminders(t), blocks: content?.array)
+                builder.addUser(text: parsed.text, attachments: parsed.attachments, at: stamp)
             }
         case "assistant":
             if let m = v["message"]?["model"]?.string, !m.isEmpty { lastModel = m }
@@ -94,7 +96,8 @@ struct SessionReader: Sendable {
                                body: origin?["body"]?.string ?? PeerMessenger.unwrap(a["prompt"]?.string ?? "")?.body ?? "",
                                at: stamp)
             } else if let p = a["prompt"]?.string, SessionIndex.isRealPrompt(p) {
-                builder.addUser(text: SessionReader.stripReminders(p), at: stamp)
+                let parsed = UserMessageParser.parse(text: SessionReader.stripReminders(p), blocks: nil)
+                builder.addUser(text: parsed.text, attachments: parsed.attachments, at: stamp)
             }
         case "system":
             switch v["subtype"]?.string {
@@ -119,7 +122,8 @@ struct SessionReader: Sendable {
         if name == PeerMessenger.senderName {
             // 本 app 投进去的：本地已经显示过就不再来一遍；别的实例投的就显示正文（去掉给对方看的那句说明）。
             if let i = expectedEchoes.firstIndex(of: text) { expectedEchoes.remove(at: i); return }
-            builder.addUser(text: PeerMessenger.stripUserNote(text), at: date)
+            let parsed = UserMessageParser.parse(text: PeerMessenger.stripUserNote(text), blocks: nil)
+            builder.addUser(text: parsed.text, attachments: parsed.attachments, at: date)
         } else {
             builder.addUser(text: "来自会话「\(name ?? "?")」：\n\(text)", at: date)
         }
