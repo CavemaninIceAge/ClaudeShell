@@ -4,7 +4,7 @@
   --bg: #ffffff;
   --fg: #0d0d0d;
   --fg-2: #5d5d5d;
-  --fg-3: #8a8a8a;
+  --fg-3: #6b6b6b;
   --line: #e3e3e3;
   --bubble: #f1f1f1;
   --panel: #f7f7f7;
@@ -29,7 +29,7 @@
     --bg: #212121;
     --fg: #ececec;
     --fg-2: #b4b4b4;
-    --fg-3: #8e8e8e;
+    --fg-3: #9a9a9a;
     --line: #3a3a3a;
     --bubble: #2f2f2f;
     --panel: #2a2a2a;
@@ -56,7 +56,7 @@ html, body { margin: 0; padding: 0; background: transparent; }
 html { overflow-y: auto; scrollbar-gutter: stable both-edges; }
 body {
   color: var(--fg);
-  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -86,7 +86,7 @@ a:hover { text-decoration-color: var(--fg); }
   mask-size: contain;
 }
 /* 各图标的 mask-image 在生成的 icons.css 里。 */
-#list { display: flex; flex-direction: column; gap: 22px; }
+#list { display: flex; flex-direction: column; gap: 28px; }
 
 /* 用户消息：右侧的灰色圆角块；附件（图片缩略图 / 文件片）挂在它上面，一样靠右 */
 .item.user { display: flex; justify-content: flex-end; }
@@ -139,7 +139,7 @@ a:hover { text-decoration-color: var(--fg); }
 .text ul, .text ol { margin: 0 0 0.85em; padding-left: 1.4em; }
 .text li { margin: 0.2em 0; }
 .text li > p { margin: 0.2em 0; }
-.text blockquote { margin: 0 0 0.85em; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); color: var(--fg-2); }
+.text blockquote { margin: 0 0 0.85em; padding: 2px 0 2px 12px; border-left: 1px solid var(--line); color: var(--fg-2); }
 .text hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
 .text strong { font-weight: 600; }
 .text table { border-collapse: collapse; margin: 0.4em 0 1em; font-size: 13px; display: block; max-width: 100%; overflow-x: auto; }
@@ -176,7 +176,7 @@ details > summary .chev { display: inline-flex; transition: transform 160ms ease
 details[open] > summary .chev { transform: rotate(90deg); }
 /* 流式思考行上的强度徽标，对应终端「thinking with xhigh effort」。 */
 .effort-tag { font-size: 11px; color: var(--fg-3); border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; line-height: 15px; }
-.thinking-body { margin: 6px 0 4px 20px; color: var(--fg-2); font-size: 13px; line-height: 1.6; border-left: 2px solid var(--line); padding-left: 12px; }
+.thinking-body { margin: 6px 0 4px 20px; color: var(--fg-2); font-size: 13px; line-height: 1.6; border-left: 1px solid var(--line); padding-left: 12px; }
 .thinking-body > :first-child { margin-top: 0; }
 .thinking-body > :last-child { margin-bottom: 0; }
 .thinking-body p { margin: 0 0 0.7em; }
@@ -187,7 +187,7 @@ details.steps:not([open]) > summary .live-text::after { content: ""; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .live-text { animation: none; color: var(--fg-2); } }
 
-.step-list { margin: 6px 0 2px 20px; display: flex; flex-direction: column; gap: 2px; border-left: 2px solid var(--line); padding-left: 12px; }
+.step-list { margin: 6px 0 2px 20px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid var(--line); padding-left: 12px; }
 details.step > summary { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; font-size: 12.5px; color: var(--fg-2); padding: 3px 0; }
 details.step > summary .step-icon { display: inline-flex; color: var(--fg-2); }
 details.step > summary .step-label { flex: none; }
@@ -206,7 +206,7 @@ details.step > summary .spinner { width: 10px; height: 10px; border: 1.5px solid
 .item.note.level-warn { color: var(--warn); }
 .item.note.level-error { color: var(--danger); text-align: left; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 8px; font-size: 12.5px; }
 /* 终端里离开回来时那条「※ recap:」，这里对齐做成一条左标线的摘要块。 */
-.item.note.level-recap { text-align: left; display: flex; gap: 8px; padding: 8px 12px; font-size: 12.5px; color: var(--fg-2); white-space: normal; border-left: 2px solid var(--fg-3); background: var(--panel); border-radius: 0 8px 8px 0; }
+.item.note.level-recap { text-align: left; display: flex; gap: 8px; padding: 8px 12px; font-size: 12.5px; color: var(--fg-2); white-space: normal; border-left: 1px solid var(--fg-3); background: var(--panel); border-radius: 0 8px 8px 0; }
 .item.note.level-recap .recap-tag { flex: none; font-weight: 600; color: var(--fg); text-transform: lowercase; letter-spacing: 0.02em; }
 .item.note.level-recap .recap-body { flex: 1; }
 
@@ -226,3 +226,20 @@ details.step > summary .spinner { width: 10px; height: 10px; border: 1.5px solid
 .hljs-built_in, .hljs-type, .hljs-class .hljs-title, .hljs-title.class_ { color: var(--hl-builtin); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
+
+/* Keyboard and narrow-window states use the same quiet native palette. */
+:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 4px; border-radius: 4px; }
+body { caret-color: var(--fg); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg-2) 45%, transparent); border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+@media (max-width: 560px) {
+  #root { padding: 18px 20px 12px; }
+  .item.user .user-wrap { max-width: 90%; }
+  .text table { font-size: 12px; }
+  .att-image { max-width: 220px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  details > summary .chev, .codeblock-head button { transition: none; }
+  details.step > summary .spinner { animation: none; }
+}

@@ -67,7 +67,9 @@ enum AccountOps {
 
     /// 把当前令牌存进这个账号的快照；内容没变就不写（少弹钥匙串、少改 mdat）。
     static func saveSnapshot(_ account: ClaudeAccount, payload: String) throws {
-        if KeychainCLI.read(service: account.keychainService) == payload { return }
+        let previous = KeychainCLI.read(service: account.keychainService)
+        let payload = CredentialFreshness.newest(previous, payload, timestamp: CredentialFreshness.claude)
+        if previous == payload { return }
         try KeychainCLI.write(service: account.keychainService, secret: payload)
     }
 
@@ -112,202 +114,431 @@ enum AccountOps {
     }
 }
 
-/// 保存过的账号列表 + 谁在生效。切换 = 把快照写回 Claude Code 自己的登录态，终端和这个 app 一起换。
+/// Saved credentials and selections belong to this app. Shared terminal/Desktop state changes only through a push.
 @MainActor
 @Observable
 final class AccountStore {
     static let shared = AccountStore()
-
-    enum Busy: Equatable {
-        case syncing
-        case switching(String)
-    }
+    enum Busy: Equatable { case syncing; case switching(String) }
 
     private(set) var accounts: [ClaudeAccount] = []
-    private(set) var activeId: String? = nil
-    /// 本机现在根本没登录（钥匙串或 .claude.json 里没有登录态）。
+    private(set) var activeId: String?
+    private(set) var providers: [APIProvider] = []
+    private(set) var activeProviderId: String?
+    private(set) var codexAccounts: [CodexAccount] = []
+    private(set) var activeCodexId: String?
     private(set) var isLoggedOut = false
-    private(set) var busy: Busy? = nil
-    var lastError: String? = nil
-    /// 刚切完账号时那句话（"终端里 N 个会话跟着换"），几秒后自己消失。
-    private(set) var switchNote: String? = nil
-    /// 「添加账号」进行中的登录流程；非 nil 时侧栏弹出登录面板。
-    var loginSession: LoginSession? = nil
-    /// 切换成功后回调（ThreadStore 用来把自己起的 claude 进程收掉，让它们下次按新账号起）。
-    var onSwitched: (@MainActor (ClaudeAccount) -> Void)?
-
+    private(set) var busy: Busy?
+    var lastError: String?
+    private(set) var switchNote: String?
+    private(set) var hasPushBackup = false
+    var loginSession: LoginSession?
+    var addingProvider = false
+    var onSwitched: (@MainActor (ClaudeAccount?) -> Void)?
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var inFlight = false
-    @ObservationIgnored private var noteTask: Task<Void, Never>? = nil
+    @ObservationIgnored private var noteTask: Task<Void, Never>?
+    @ObservationIgnored private var blockedManifestPaths: Set<String> = []
+    @ObservationIgnored private var legacyProviderBackup: SettingsBackup?
 
     var active: ClaudeAccount? { accounts.first { $0.id == activeId } }
+    var activeProvider: APIProvider? { providers.first { $0.id == activeProviderId } }
+    var activeCodex: CodexAccount? { codexAccounts.first { $0.id == activeCodexId } }
+    var canPushToTerminal: Bool { active != nil || activeProvider != nil }
+    var canPushToCodexApp: Bool { activeCodex != nil }
 
-    /// 自动化验证用：`-testClaudeConfigDir <dir>` 让登录态的位置整个换成一个临时目录（钥匙串条目名也跟着变），
-    /// `-testAccountsFile <path>` 换掉账号清单，真账号一根手指都不碰。
     private var liveEnv: [String: String] {
         var env = ShellEnvironment.environment()
         if let dir = UserDefaults.standard.string(forKey: "testClaudeConfigDir"), !dir.isEmpty {
             env["CLAUDE_CONFIG_DIR"] = dir
             env.removeValue(forKey: "CLAUDE_SECURESTORAGE_CONFIG_DIR")
         }
+        if let dir = UserDefaults.standard.string(forKey: "testCodexConfigDir"), !dir.isEmpty { env["CODEX_HOME"] = dir }
         return env
     }
-
     private var manifestURL: URL {
-        if let p = UserDefaults.standard.string(forKey: "testAccountsFile"), !p.isEmpty {
-            return URL(fileURLWithPath: p)
-        }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Claude Shell/accounts.json")
+        UserDefaults.standard.string(forKey: "testAccountsFile").map { URL(fileURLWithPath: $0) }
+            ?? AppAuthPaths.support.appendingPathComponent("accounts.json")
     }
-
-    // MARK: - 读写清单
+    private var providersURL: URL {
+        UserDefaults.standard.string(forKey: "testProvidersFile").map { URL(fileURLWithPath: $0) }
+            ?? AppAuthPaths.support.appendingPathComponent("providers.json")
+    }
+    private var codexURL: URL { AppAuthPaths.support.appendingPathComponent("codex-accounts.json") }
 
     func load() {
         guard !loaded else { return }
         loaded = true
-        if let data = try? Data(contentsOf: manifestURL),
-           let m = try? JSONDecoder.standard.decode(AccountManifest.self, from: data) {
-            accounts = m.accounts
-            activeId = m.activeId
+        if let data = readManifest(manifestURL) {
+            if let m = try? JSONDecoder.standard.decode(AccountManifest.self, from: data) {
+                accounts = m.accounts
+                activeId = m.activeId
+            } else { preserveInvalidManifest(manifestURL) }
         }
+        if let data = readManifest(providersURL) {
+            if let m = try? JSONDecoder.standard.decode(ProviderManifest.self, from: data) {
+                providers = m.providers
+                activeProviderId = m.activeId
+                // Legacy versions persisted a shared-settings backup. Preserve it, with private permissions;
+                // it is never used to silently alter terminal settings in the new app-only model.
+                legacyProviderBackup = m.backup
+                if m.backup != nil { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: providersURL.path) }
+            } else { preserveInvalidManifest(providersURL) }
+        }
+        if let data = readManifest(codexURL) {
+            if let m = try? JSONDecoder.standard.decode(CodexAccountManifest.self, from: data) {
+                codexAccounts = m.accounts
+                activeCodexId = m.activeId
+            } else { preserveInvalidManifest(codexURL) }
+        }
+        hasPushBackup = AccountPushOps.hasBackup
+        isLoggedOut = active == nil && activeProvider == nil
         LoginSession.sweepLeftovers()
     }
-
-    private func save() {
-        let m = AccountManifest(accounts: accounts, activeId: activeId)
-        guard let data = try? JSONEncoder.standard.encode(m) else { return }
-        try? FileManager.default.createDirectory(at: manifestURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: manifestURL, options: .atomic)
+    private func readManifest(_ url: URL) -> Data? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do { return try Data(contentsOf: url) }
+        catch {
+            blockedManifestPaths.insert(url.path)
+            lastError = "无法读取 \(url.lastPathComponent)，已停止改写这个清单"
+            return nil
+        }
     }
-
-    /// 身份字段以最新读到的为准，addedAt 保留。
+    private func preserveInvalidManifest(_ url: URL) {
+        do {
+            let backup = try AccountManifestStorage.preserveInvalid(url)
+            lastError = "\(url.lastPathComponent) 无法读取，原文件已保留为 \(backup.lastPathComponent)"
+        } catch {
+            blockedManifestPaths.insert(url.path)
+            lastError = "\(url.lastPathComponent) 无法读取且不能保存备份，已停止写入这个清单"
+        }
+    }
+    private func save() {
+        guard !blockedManifestPaths.contains(manifestURL.path) else { return }
+        do { try AppAuthPaths.writePrivate(JSONEncoder.standard.encode(AccountManifest(accounts: accounts, activeId: activeId)), to: manifestURL) }
+        catch { lastError = "保存账号清单失败：\(error.localizedDescription)" }
+    }
+    private func saveProviders() {
+        guard !blockedManifestPaths.contains(providersURL.path) else { return }
+        var m = ProviderManifest()
+        m.providers = providers
+        m.activeId = activeProviderId
+        m.backup = legacyProviderBackup // retained only until successful Keychain migration
+        do { try AppAuthPaths.writePrivate(JSONEncoder.standard.encode(m), to: providersURL) }
+        catch { lastError = "保存提供方清单失败：\(error.localizedDescription)" }
+    }
+    private func saveCodex() {
+        guard !blockedManifestPaths.contains(codexURL.path) else { return }
+        do { try AppAuthPaths.writePrivate(JSONEncoder.standard.encode(CodexAccountManifest(accounts: codexAccounts, activeId: activeCodexId)), to: codexURL) }
+        catch { lastError = "保存 Codex 账号失败：\(error.localizedDescription)" }
+    }
     private func merge(_ acc: ClaudeAccount) {
         if let i = accounts.firstIndex(where: { $0.id == acc.id }) {
-            var kept = accounts[i]
-            kept.email = acc.email
-            kept.orgName = acc.orgName
-            kept.orgId = acc.orgId
-            kept.subscriptionType = acc.subscriptionType ?? kept.subscriptionType
-            kept.oauthAccount = acc.oauthAccount
-            accounts[i] = kept
-        } else {
-            accounts.append(acc)
-        }
+            var updated = acc
+            updated.addedAt = accounts[i].addedAt
+            updated.lastActiveAt = accounts[i].lastActiveAt
+            accounts[i] = updated
+        } else { accounts.append(acc) }
     }
-
-    // MARK: - 和真实登录态对表
-
-    /// 看一眼现在登录的是谁：终端里 `/login` 换过的账号自动收录；正在生效的账号刚刷新过的令牌也同步进快照，
-    /// 免得切走再切回来时拿的是旧令牌。启动、激活、每 90 秒各跑一次，切换前也跑。
-    func sync() async {
-        load()
-        guard !inFlight else { return }
-        inFlight = true
-        busy = busy ?? .syncing
-        defer { inFlight = false; if busy == .syncing { busy = nil } }
-        let env = liveEnv
-        let state = await Task.detached(priority: .utility) { AccountOps.readLive(env: env) }.value
-        apply(state)
+    private func mergeCodex(_ acc: CodexAccount) {
+        if let i = codexAccounts.firstIndex(where: { $0.id == acc.id }) {
+            var updated = acc
+            updated.addedAt = codexAccounts[i].addedAt
+            updated.lastActiveAt = codexAccounts[i].lastActiveAt
+            codexAccounts[i] = updated
+        } else { codexAccounts.append(acc) }
     }
-
-    private func apply(_ state: AccountOps.LiveState) {
-        switch state {
-        case .loggedOut:
-            isLoggedOut = true
-            activeId = nil
-        case .account(let acc, let payload):
-            isLoggedOut = false
-            merge(acc)
-            activeId = acc.id
-            let snapshot = accounts.first { $0.id == acc.id } ?? acc
-            Task.detached(priority: .utility) {
-                do { try AccountOps.saveSnapshot(snapshot, payload: payload) } catch {
-                    await MainActor.run { AccountStore.shared.lastError = error.localizedDescription }
-                }
-            }
-        }
-        save()
-    }
-
-    // MARK: - 切换 / 移除 / 添加
-
-    func switchTo(_ id: String) async {
-        load()
-        guard let target = accounts.first(where: { $0.id == id }) else { return }
-        // 正好撞上一次 sync（几十毫秒）就等它完，别把用户这一下点击丢掉。
-        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
-        inFlight = true
-        busy = .switching(id)
-        lastError = nil
-        defer { inFlight = false; busy = nil }
-        let env = liveEnv
-        // 先把当前登录态存进它自己的快照，再换。
-        let before = await Task.detached(priority: .userInitiated) { AccountOps.readLive(env: env) }.value
-        if case .account(let acc, let payload) = before {
-            merge(acc)
-            let snapshot = accounts.first { $0.id == acc.id } ?? acc
-            do {
-                try await Task.detached(priority: .userInitiated) { try AccountOps.saveSnapshot(snapshot, payload: payload) }.value
-            } catch {
-                lastError = "切换前保存当前账号的登录态失败：\(error.localizedDescription)"
-                return
-            }
-        }
-        do {
-            try await Task.detached(priority: .userInitiated) { try AccountOps.switchLive(to: target, env: env) }.value
-        } catch {
-            lastError = error.localizedDescription
-            return
-        }
-        activeId = id
-        isLoggedOut = false
-        if let i = accounts.firstIndex(where: { $0.id == id }) { accounts[i].lastActiveAt = Date() }
-        save()
-        onSwitched?(target)
-        // 终端里开着的会话不用管：它们下一次请求就会用新账号（实测 0.2 秒后发出的请求已经是新账号）。
-        // 这里只是把「有几个会话跟着换了」说给用户听。
-        noteSwitch(liveTerminalSessions: ThreadStore.shared.live.count)
-        // 问 claude 本尊确认一下，别只相信自己写对了。
-        let identity = await Task.detached(priority: .userInitiated) { ClaudeAuth.status(env: env) }.value
-        if let identity {
-            if !identity.loggedIn {
-                lastError = "已写入 \(target.email) 的登录态，但 claude auth status 说未登录；这个账号可能要重新添加"
-            } else if let email = identity.email, email.lowercased() != target.email.lowercased() {
-                lastError = "已写入 \(target.email) 的登录态，但 claude auth status 报的是 \(email)"
-            }
-        }
-        TestLog.write("account switched to \(target.email) status=\(identity.map { "\($0.loggedIn) \($0.email ?? "-")" } ?? "nil")")
-    }
-
-    private func noteSwitch(liveTerminalSessions count: Int) {
-        switchNote = count > 0 ? "终端里 \(count) 个会话已跟着换" : "终端里的 Claude Code 也已换成它"
+    private func note(_ message: String) {
+        switchNote = message
         noteTask?.cancel()
         noteTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(8))
+            try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled else { return }
             self?.switchNote = nil
         }
     }
 
-    /// 只从清单和钥匙串里删快照，不动本机当前的登录态；正在生效的账号不能删（先切走）。
-    func remove(_ id: String) async {
-        guard id != activeId, let acc = accounts.first(where: { $0.id == id }) else { return }
-        accounts.removeAll { $0.id == id }
-        save()
-        let service = acc.keychainService
-        await Task.detached(priority: .utility) { KeychainCLI.delete(service: service) }.value
+    /// Refresh local snapshots without adopting an externally changed selection.
+    func sync() async { await importLocalAccounts(showNote: false) }
+    func importLocalAccounts() async { await importLocalAccounts(showNote: true) }
+    private func importLocalAccounts(showNote: Bool) async {
+        load()
+        guard !inFlight else { return }
+        inFlight = true
+        busy = .syncing
+        defer { inFlight = false; busy = nil }
+        if showNote { lastError = nil }
+        let env = liveEnv, all = providers
+        if let legacy = legacyProviderBackup {
+            let migrated = await Task.detached(priority: .utility) {
+                do {
+                    let encoded = try JSONEncoder.standard.encode(legacy)
+                    let compact = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: encoded))
+                    guard let payload = String(data: compact, encoding: .utf8) else { return false }
+                    try KeychainCLI.write(service: "Claudex Shell-legacy-provider-backup", secret: payload)
+                    return true
+                } catch { return false }
+            }.value
+            if migrated { legacyProviderBackup = nil; saveProviders() }
+        }
+        let result = await Task.detached(priority: .utility) {
+            var claude: ClaudeAccount?
+            var codex: CodexAccount?
+            var provider: APIProvider?
+            var failures: [String] = []
+            if case .account(let account, let payload) = AccountOps.readLive(env: env) {
+                do { try AccountOps.saveSnapshot(account, payload: payload); claude = account }
+                catch { failures.append(error.localizedDescription) }
+            }
+            do {
+                if let (account, payload) = try CodexAccountOps.readLocal(env: env) {
+                    try CodexAccountOps.save(account, payload: payload)
+                    codex = account
+                }
+            } catch { failures.append(error.localizedDescription) }
+            do { provider = try ProviderOps.importLocal(among: all, env: env) }
+            catch { failures.append(error.localizedDescription) }
+            return (claude, codex, provider, failures)
+        }.value
+        if let account = result.0 {
+            merge(account)
+            if activeId == nil && activeProviderId == nil { activeId = account.id }
+            save()
+        }
+        if let account = result.1 {
+            mergeCodex(account)
+            if activeCodexId == nil { activeCodexId = account.id }
+            saveCodex()
+        }
+        if let provider = result.2 {
+            if let i = providers.firstIndex(where: { $0.id == provider.id }) { providers[i] = provider }
+            else { providers.append(provider) }
+            if activeId == nil && activeProviderId == nil { activeProviderId = provider.id }
+            saveProviders()
+        }
+        isLoggedOut = active == nil && activeProvider == nil
+        if showNote {
+            let count = [result.0 != nil, result.1 != nil, result.2 != nil].filter { $0 }.count
+            note(count > 0 ? "已保存本机 \(count) 类登录态；当前应用内选择保持独立" : "未发现可导入的本机登录态")
+            if !result.3.isEmpty { lastError = result.3.joined(separator: "\n") }
+        }
     }
 
+    func switchTo(_ id: String) async {
+        load()
+        guard let target = accounts.first(where: { $0.id == id }) else { return }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching(id); lastError = nil
+        defer { inFlight = false; busy = nil }
+        let env = liveEnv
+        do {
+            _ = try await Task.detached(priority: .userInitiated) { try AccountOps.prepareIsolated(target, base: env) }.value
+            activeId = id
+            activeProviderId = nil
+            isLoggedOut = false
+            if let i = accounts.firstIndex(where: { $0.id == id }) { accounts[i].lastActiveAt = Date() }
+            save(); saveProviders()
+            onSwitched?(target)
+            note("已在 Claudex Shell 中切换；终端登录态未改动")
+        } catch { lastError = error.localizedDescription }
+    }
+    func switchToProvider(_ id: String) async {
+        lastError = nil
+        if let error = await performProviderSwitch(id) { lastError = error }
+    }
+    private func performProviderSwitch(_ id: String) async -> String? {
+        load()
+        guard let target = providers.first(where: { $0.id == id }) else { return "找不到这个提供方" }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching(id)
+        defer { inFlight = false; busy = nil }
+        let env = liveEnv
+        do {
+            _ = try await Task.detached(priority: .userInitiated) { try ProviderOps.prepareIsolated(target, base: env) }.value
+        } catch { return error.localizedDescription }
+        activeProviderId = id
+        isLoggedOut = false
+        if let i = providers.firstIndex(where: { $0.id == id }) { providers[i].lastActiveAt = Date() }
+        saveProviders()
+        onSwitched?(nil)
+        note("已在 Claudex Shell 中切换至 \(target.name)；终端登录态未改动")
+        return nil
+    }
+    func deactivateProvider() async {
+        if let id = activeId { await switchTo(id); return }
+        activeProviderId = nil
+        isLoggedOut = true
+        saveProviders()
+        onSwitched?(nil)
+        note("已停用应用内提供方；终端登录态未改动")
+    }
+    func switchToCodex(_ id: String) async {
+        load()
+        guard let target = codexAccounts.first(where: { $0.id == id }) else { return }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching(id); lastError = nil
+        defer { inFlight = false; busy = nil }
+        let env = liveEnv
+        do {
+            _ = try await Task.detached(priority: .userInitiated) { try CodexAccountOps.prepare(target, base: env) }.value
+            activeCodexId = id
+            if let i = codexAccounts.firstIndex(where: { $0.id == id }) { codexAccounts[i].lastActiveAt = Date() }
+            saveCodex()
+            onSwitched?(active)
+            note("已切换应用内 Codex 账号；Codex app 与终端登录态未改动")
+        } catch { lastError = error.localizedDescription }
+    }
+
+    func prepareClaudeEnvironment() async throws -> [String: String] {
+        load()
+        let env = liveEnv
+        if let provider = activeProvider {
+            return try await Task.detached(priority: .userInitiated) { try ProviderOps.prepareIsolated(provider, base: env) }.value
+        }
+        guard let account = active else { throw AccountOps.Failure(message: "请先导入本机 Claude/GLM 登录态，或添加一个账号") }
+        return try await Task.detached(priority: .userInitiated) { try AccountOps.prepareIsolated(account, base: env) }.value
+    }
+    func prepareCodexEnvironment() async throws -> [String: String] {
+        load()
+        guard let account = activeCodex else { throw AccountOps.Failure(message: "请先在账号菜单导入本机 Codex 登录态") }
+        let env = liveEnv
+        return try await Task.detached(priority: .userInitiated) { try CodexAccountOps.prepare(account, base: env) }.value
+    }
+
+    /// Explicit external write. Starting a new terminal session picks up these files; inherited shell overrides may still win.
+    func pushToTerminal() async {
+        load()
+        guard canPushToTerminal else { return }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching("push-terminal"); lastError = nil
+        defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
+        let env = liveEnv, account = active, provider = activeProvider
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                let settingsURL = ClaudeSettings.url(env: env)
+                let settingsOriginal = try AccountPushOps.readFile(settingsURL)
+                let sourceSettings = try ClaudeSettings.decoded(settingsOriginal, url: settingsURL)
+                if let provider {
+                    guard let secret = try KeychainCLI.readChecked(service: provider.keychainService), !secret.isEmpty else {
+                        throw AccountOps.Failure(message: "提供方密钥不可用，未推送")
+                    }
+                    let settings = ProviderOps.settings(for: provider, source: sourceSettings)
+                    let plan = AccountPushOps.Plan(files: [.init(url: settingsURL, contents: try ClaudeSettings.encoded(settings), expectedOriginal: .some(settingsOriginal))])
+                    try AccountPushOps.transaction(plan, label: "终端 · \(provider.name)")
+                } else if let account {
+                    _ = try AccountOps.prepareIsolated(account, base: env) // save any refresh-token rotation first
+                    guard let payload = try KeychainCLI.readChecked(service: account.keychainService) else { throw AccountOps.Failure(message: "Claude 登录态快照不可用") }
+                    let service = ClaudeAuth.credentialsService(env: env)
+                    let settings = ProviderOps.removingAuthentication(from: sourceSettings)
+                    let identityURL = ClaudeAuth.configFileURL(env: env)
+                    let identityOriginal = try AccountPushOps.readFile(identityURL)
+                    var identity: [String: Any] = [:]
+                    if let data = identityOriginal {
+                        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw AccountOps.Failure(message: "Claude 身份文件不是有效 JSON，未推送") }
+                        identity = object
+                    }
+                    identity["oauthAccount"] = account.oauthAccount.toAny()
+                    let identityData = try JSONSerialization.data(withJSONObject: identity, options: [.withoutEscapingSlashes, .sortedKeys, .prettyPrinted])
+                    let plan = AccountPushOps.Plan(files: [
+                        .init(url: settingsURL, contents: try ClaudeSettings.encoded(settings), expectedOriginal: .some(settingsOriginal)),
+                        .init(url: identityURL, contents: identityData, mode: 0o600, expectedOriginal: .some(identityOriginal)),
+                    ], credential: .init(service: service, payload: payload))
+                    try AccountPushOps.transaction(plan, label: "终端 · Claude")
+                }
+            }.value
+            hasPushBackup = true
+            note("已推送至终端并保存恢复备份；请新开 Claude Code 会话使用")
+        } catch { lastError = error.localizedDescription }
+    }
+    /// Codex Desktop and the Codex CLI intentionally share the local auth store.
+    func pushToCodexApp() async {
+        load()
+        guard let account = activeCodex else { return }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching("push-codex"); lastError = nil
+        defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
+        let env = liveEnv
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                let home = AppAuthPaths.localCodexHome(env: env)
+                try CodexAccountOps.requireFileStore(home: home)
+                _ = try CodexAccountOps.prepare(account, base: env)
+                guard let payload = KeychainCLI.read(service: account.keychainService) else { throw AccountOps.Failure(message: "Codex 登录态快照不可用") }
+                let authURL = home.appendingPathComponent("auth.json")
+                let plan = AccountPushOps.Plan(files: [.init(url: authURL, contents: Data(payload.utf8), mode: 0o600)])
+                try AccountPushOps.transaction(plan, label: "Codex app 与 Codex CLI")
+            }.value
+            hasPushBackup = true
+            note("已推送到 Codex app / CLI 共用登录态并备份；运行中的 Codex app 可能需要重启")
+        } catch { lastError = error.localizedDescription }
+    }
+    func pushCodexToTerminal() async { await pushToCodexApp() }
+
+    func removeCodex(_ id: String) async {
+        guard codexAccounts.contains(where: { $0.id == id }) else { return }
+        await remove(id)
+    }
+
+    func rollbackLastPush() async {
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching("rollback"); lastError = nil
+        defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
+        do {
+            try await Task.detached(priority: .userInitiated) { try AccountPushOps.rollback() }.value
+            hasPushBackup = AccountPushOps.hasBackup
+            note("已恢复上次推送前的登录态；正在运行的客户端可能需要重启")
+        } catch { lastError = error.localizedDescription }
+    }
+
+    func remove(_ id: String) async {
+        if let p = providers.first(where: { $0.id == id }) {
+            guard id != activeProviderId else { return }
+            let env = liveEnv, all = providers
+            let onDisk = await Task.detached(priority: .utility) { ProviderOps.detectActive(in: all, env: env) }.value
+            if onDisk == .provider(id) || onDisk == .unreadable {
+                lastError = "此提供方可能仍被终端使用；请先推送其它账号，避免移除钥匙串后终端失去凭据"
+                return
+            }
+            providers.removeAll { $0.id == id }; saveProviders()
+            // Retain imported/external Keychain entries. App-owned secrets are retained while a rollback backup may refer to them.
+            if p.ownsKeychainItem && !hasPushBackup {
+                await Task.detached(priority: .utility) { KeychainCLI.delete(service: p.keychainService) }.value
+            }
+        } else if let account = codexAccounts.first(where: { $0.id == id }), id != activeCodexId {
+            codexAccounts.removeAll { $0.id == id }; saveCodex()
+            await Task.detached(priority: .utility) {
+                KeychainCLI.delete(service: account.keychainService)
+                try? FileManager.default.removeItem(at: AppAuthPaths.codexRuntimeHome(account.id).appendingPathComponent("auth.json"))
+            }.value
+        } else if let account = accounts.first(where: { $0.id == id }), id != activeId {
+            accounts.removeAll { $0.id == id }; save()
+            await Task.detached(priority: .utility) {
+                KeychainCLI.delete(service: account.keychainService)
+                let env = AccountOps.isolatedEnvironment(id: account.id, base: [:])
+                KeychainCLI.delete(service: ClaudeAuth.credentialsService(env: env))
+            }.value
+        }
+    }
+    func addProvider(name: String, baseURL: String, secret: String, model: String?) async -> String? {
+        load()
+        guard let url = URL(string: baseURL), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil,
+              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "请填写有效的 API 地址和密钥" }
+        let id = UUID().uuidString.lowercased()
+        let provider = APIProvider(id: id, name: name, baseURL: baseURL, keychainService: APIProvider.ownedServicePrefix + id,
+                                   model: model, extraEnv: nil, addedAt: Date())
+        do {
+            try await Task.detached(priority: .userInitiated) { try KeychainCLI.write(service: provider.keychainService, secret: secret) }.value
+        } catch { return error.localizedDescription }
+        providers.append(provider); saveProviders()
+        return await performProviderSwitch(id)
+    }
     func beginLogin() {
         guard loginSession == nil else { return }
         let session = LoginSession()
-        session.onFinished = { [weak self] acc in
+        session.onFinished = { [weak self] account in
             guard let self else { return }
-            self.merge(acc)
-            self.save()
-            self.loginSession = nil
-            Task { await self.switchTo(acc.id) }
+            self.merge(account); self.save(); self.loginSession = nil
+            Task { await self.switchTo(account.id) }
         }
         loginSession = session
         session.start()
@@ -356,6 +587,7 @@ final class LoginSession: Identifiable {
         var env = ShellEnvironment.environment()
         env["CLAUDE_CONFIG_DIR"] = dir.path
         env.removeValue(forKey: "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        env["BROWSER"] = "/usr/bin/true" // Display the URL; opening a browser requires the explicit button.
         return env
     }
 

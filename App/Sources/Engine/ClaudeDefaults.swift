@@ -66,9 +66,13 @@ enum ClaudeDefaults {
         return nil
     }
 
+    /// settings.json 里 `env.ANTHROPIC_MODEL`（API 提供方写的，如 glm-5.3）比 `model` 优先（2.1.283 实测）。
     static func settingsModel() -> String? {
         guard let data = try? Data(contentsOf: settingsURL), let v = JSONValue.parse(data) else { return nil }
-        let m = v["model"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return m.isEmpty ? nil : m
+        for raw in [v["env"]?["ANTHROPIC_MODEL"]?.string, v["model"]?.string] {
+            let m = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !m.isEmpty { return m }
+        }
+        return nil
     }
 }

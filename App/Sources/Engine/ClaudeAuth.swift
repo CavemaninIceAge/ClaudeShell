@@ -58,13 +58,17 @@ enum ClaudeAuth {
 
     /// 只改 `oauthAccount` 这一个键，其余原样写回；原子替换，权限保持 0600（Claude Code 自己就是 0600）。
     static func writeOAuthAccount(_ account: JSONValue?, env: [String: String]) throws {
-        let url = configFileURL(env: env)
+        let url = configFileURL(env: env).resolvingSymlinksInPath()
+        let fm = FileManager.default
         var obj: [String: Any] = [:]
-        if let data = try? Data(contentsOf: url) {
+        do {
+            let data = try Data(contentsOf: url)
             guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw Failure(message: "\(url.path) 不是合法 JSON，不敢改写")
             }
             obj = parsed
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError {
+            // Creating the first config is allowed. All other read failures preserve existing data.
         }
         if let account {
             obj["oauthAccount"] = account.toAny()
@@ -72,7 +76,10 @@ enum ClaudeAuth {
             obj.removeValue(forKey: "oauthAccount")
         }
         let out = try JSONSerialization.data(withJSONObject: obj, options: [.withoutEscapingSlashes, .sortedKeys, .prettyPrinted])
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".claude.json.claude-shell-\(getpid())")
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(".claude.json.claudex-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: tmp) }
         try out.write(to: tmp, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
         if FileManager.default.fileExists(atPath: url.path) {

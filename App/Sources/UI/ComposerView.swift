@@ -2,214 +2,270 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 底部的输入卡：附件条 + 多行文本 + 「+」/ 目录 / 模型 / 权限 / 强度胶囊 + 发送（或停止）键。
-/// 文件 / 照片可以拖进来、⌘V 贴进来、或点「+」选；整张卡（连同外面的正文区）都是拖放目标。
+/// Native input, attachments and engine controls share one compact workspace composer.
 struct ComposerView: View {
     let controller: ConversationController
-    var dropTargeted = false                  // 外层正文区正被拖着东西经过（ThreadView 报进来）
+    var dropTargeted = false
     @Environment(ThreadStore.self) private var store
     @State private var text = ""
-    @State private var isComposing = false   // 输入法正在组字（text 只含已上屏的字）
+    @State private var isComposing = false
     @State private var editorHeight: CGFloat = 22
     @State private var editorDropTargeted = false
+    @State private var editingModel = false
+    @State private var customModel = ""
 
     private var liveInTerminal: Bool { controller.isLiveInTerminal }
-
+    private var isCodex: Bool { controller.engine == .codex }
+    private var effective: ConversationController.Effective { controller.effective(defaults: store.terminalDefaults) }
+    private var highlightDrop: Bool { dropTargeted || editorDropTargeted }
     private var canSend: Bool {
         let hasText = !isComposing && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasContent = hasText || (!isComposing && !controller.attachments.isEmpty)
-        // 终端里开着的会话：这里发的话投进终端去，那边忙着也行（会在两次工具调用之间送到）。
         return hasContent && (liveInTerminal ? !controller.isLoadingHistory : controller.canSend)
     }
-
-    private var highlightDrop: Bool { dropTargeted || editorDropTargeted }
-
     private var placeholder: String {
-        liveInTerminal ? "发到终端里的这个对话，那边的 Claude 回答后这里同步显示" : "问 Claude 任何事"
+        liveInTerminal ? "发送到终端中正在进行的对话…" : (controller.handoff?.isPending == true ? "告诉 Claude 接下来做什么…" : "描述任务、提问，或添加文件…")
     }
-
-    // 胶囊上永远写具体生效的值（和终端一样），「跟随终端设置 / 默认强度」只留在菜单里当选项。
-    private var effective: ConversationController.Effective { controller.effective(defaults: store.terminalDefaults) }
-
-    private var modelOptions: [(id: String, title: String)] {
-        ModelOption.all.map { option in
-            guard option.id.isEmpty, let name = store.terminalDefaults.model.map(ModelOption.displayName(for:)) else { return option }
-            return (option.id, "\(option.title) · \(name)")
-        }
+    private var modelTitle: String { effective.modelName ?? (isCodex ? "Codex 默认模型" : "Claude 默认模型") }
+    private var permissionOptions: [(id: String, title: String)] {
+        isCodex ? [("auto", "工作区权限"), ("manual", "逐项询问"), ("plan", "只读模式"), ("bypassPermissions", "完全访问")]
+            : PermissionModeOption.all
+    }
+    private var permissionTitle: String {
+        permissionOptions.first { $0.id == controller.settings.permissionMode }?.title
+            ?? PermissionModeOption.title(for: controller.settings.permissionMode)
     }
 
     private var effortOptions: [(id: String, title: String)] {
-        EffortOption.all.map { option in
+        if isCodex {
+            let model = controller.codexModels.first { $0.id == controller.settings.model }
+                ?? controller.codexModels.first { $0.isDefault }
+            return [("", "默认强度")] + (model?.efforts ?? []).map { ($0, $0) }
+        }
+        return EffortOption.all.map { option in
             guard option.id.isEmpty, let effort = store.terminalDefaults.effort else { return option }
             return (option.id, "\(option.title) · \(effort)")
         }
     }
 
-    private var modelHelp: String {
-        let e = effective
-        if liveInTerminal { return "模型：\(e.modelId ?? "?")（终端里的会话，由终端决定）" }
-        guard let id = e.modelId else { return "模型：跟随终端设置" }
-        return "模型：\(id)（\(e.modelPinned ? "本对话指定" : "跟随终端设置")）"
-    }
-
-    private var effortHelp: String {
-        let e = effective
-        if liveInTerminal { return "强度：\(e.effort ?? "?")（终端里的会话，按终端默认估计）" }
-        guard let effort = e.effort else { return "强度：默认" }
-        return "强度：\(effort)（\(e.effortPinned ? "本对话指定" : "终端默认")）"
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !controller.attachments.isEmpty {
-                AttachmentStrip(attachments: controller.attachments) { controller.removeAttachment($0) }
+        VStack(spacing: 9) {
+            if liveInTerminal {
+                Label("此对话由终端运行，使用终端当前账号；应用内账号选择不改变它。", systemImage: "terminal")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
             }
-            ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
-                             onDropFiles: { controller.attach(urls: $0) },
-                             onDropImage: { controller.attach(imageData: $0, name: $1) },
-                             onDropTargeted: { editorDropTargeted = $0 })
-                .frame(height: min(max(editorHeight, 22), 220))
-                .overlay(alignment: .topLeading) {
-                    if text.isEmpty && !isComposing {
-                        Text(placeholder)
-                            .font(.system(size: 14))
-                            .foregroundStyle(Theme.placeholder)
-                            .padding(.leading, 3)
-                            .padding(.top, 1)
-                            .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 14) {
+                if !controller.attachments.isEmpty {
+                    AttachmentStrip(attachments: controller.attachments) { controller.removeAttachment($0) }
+                }
+                ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
+                                 onDropFiles: { controller.attach(urls: $0) },
+                                 onDropImage: { controller.attach(imageData: $0, name: $1) },
+                                 onDropTargeted: { editorDropTargeted = $0 })
+                    .frame(height: min(max(editorHeight, controller.isDraft ? 56 : 36), 220))
+                    .overlay(alignment: .topLeading) {
+                        if text.isEmpty && !isComposing {
+                            Text(placeholder)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Theme.placeholder)
+                                .padding(.leading, 3)
+                                .padding(.top, 1)
+                                .allowsHitTesting(false)
+                        }
                     }
+                HStack(spacing: 7) {
+                    attachButton
+                    engineMenu
+                    modelMenu
+                    Spacer(minLength: 4)
+                    sendButton
                 }
-            HStack(spacing: 6) {
-                attachButton
-                folderChip
-                settingsMenu(icon: "cpu", title: effective.modelName ?? "跟随终端设置", help: modelHelp,
-                             options: modelOptions, selection: controller.settings.model ?? "") { new in
-                    var s = controller.settings; s.model = new.isEmpty ? nil : new; store.updateSettings(controller.id, s)
-                }
-                settingsMenu(icon: "checkmark.shield", title: PermissionModeOption.title(for: controller.settings.permissionMode),
-                             help: "权限模式：\(controller.settings.permissionMode)",
-                             options: PermissionModeOption.all, selection: controller.settings.permissionMode) { new in
+            }
+            .padding(.top, 16)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.composerFill))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(highlightDrop ? Theme.textPrimary : Theme.line, lineWidth: highlightDrop ? 1.5 : 1))
+            HStack(spacing: 10) {
+                folderButton
+                Spacer(minLength: 4)
+                settingsMenu(icon: "checkmark.shield", title: permissionTitle,
+                             options: permissionOptions, selection: controller.settings.permissionMode) { new in
                     var s = controller.settings; s.permissionMode = new; store.updateSettings(controller.id, s)
                 }
-                settingsMenu(icon: "gauge.with.needle", title: effective.effort ?? "默认强度", help: effortHelp,
+                settingsMenu(icon: "gauge.with.needle", title: effective.effort ?? "默认强度",
                              options: effortOptions, selection: controller.settings.effort ?? "") { new in
                     var s = controller.settings; s.effort = new.isEmpty ? nil : new; store.updateSettings(controller.id, s)
                 }
-                Spacer(minLength: 8)
-                if controller.isWorking {
-                    Button(action: controller.stop) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Theme.sendFg)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(Theme.sendFill))
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止生成（⌘.）")
-                } else {
-                    Button(action: submit) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(Theme.sendFg)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(Theme.sendFill))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!canSend)
-                    .opacity(canSend ? 1 : 0.3)
-                    .help("发送（⏎）；⇧⏎ 换行")
+            }
+            .padding(.horizontal, 5)
+        }
+        .alert("指定模型", isPresented: $editingModel) {
+            TextField("模型 ID", text: $customModel)
+            Button("取消", role: .cancel) { }
+            Button("使用模型") { updateModel(customModel.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } message: {
+            Text("填写当前账号可用的模型 ID；留空恢复引擎默认模型。")
+        }
+    }
+
+    private var engineMenu: some View {
+        Menu {
+            ForEach([ConversationEngine.claude, .codex], id: \.self) { engine in
+                Button {
+                    store.setDraftEngine(controller.id, engine: engine)
+                } label: {
+                    if controller.engine == engine { Label(engine.displayName, systemImage: "checkmark") }
+                    else { Text(engine.displayName) }
                 }
             }
+        } label: {
+            Chip(icon: isCodex ? "terminal" : "sparkle", title: controller.engine.displayName, showsChevron: controller.isDraft)
         }
-        .padding(.top, 12)
-        .padding(.horizontal, 14)
-        .padding(.bottom, 10)
-        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.composerFill))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(highlightDrop ? Theme.textPrimary : Theme.line, lineWidth: highlightDrop ? 1.5 : 1))
-        .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
-        .animation(.easeOut(duration: 0.12), value: highlightDrop)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .disabled(!controller.isDraft || controller.isWorking || controller.handoff != nil)
+        .help(controller.handoff != nil ? "这段对话由 Claude 接管；原 Codex 对话保留" : (controller.isDraft ? "选择这次对话使用的引擎" : "对话使用 \(controller.engine.displayName)；新建对话可切换引擎"))
+        .accessibilityLabel("对话引擎：\(controller.engine.displayName)")
+    }
+
+    private var modelMenu: some View {
+        Menu {
+            if isCodex {
+                Button("使用 Codex 默认模型") { updateModel("") }
+                ForEach(controller.codexModels, id: \.id) { model in
+                    Button { updateModel(model.id) } label: {
+                        if model.id == controller.settings.model { Label(model.name, systemImage: "checkmark") }
+                        else { Text(model.name) }
+                    }
+                }
+            } else {
+                ForEach(ModelOption.all, id: \.id) { option in
+                    Button { updateModel(option.id) } label: {
+                        if option.id == (controller.settings.model ?? "") { Label(option.title, systemImage: "checkmark") }
+                        else { Text(option.title) }
+                    }
+                }
+            }
+            Divider()
+            Button("指定模型 ID…") { customModel = controller.settings.model ?? ""; editingModel = true }
+        } label: {
+            HStack(spacing: 4) {
+                Text(modelTitle).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .disabled(liveInTerminal)
+        .help("模型：\(effective.modelId ?? modelTitle)；更改在下一轮生效")
+    }
+
+    private var sendButton: some View {
+        Button {
+            if controller.isWorking { controller.stop() } else { submit() }
+        } label: {
+            Image(systemName: controller.isWorking ? "stop.fill" : "arrow.up")
+                .font(.system(size: controller.isWorking ? 11 : 15, weight: .semibold))
+                .foregroundStyle(Theme.sendFg)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Theme.sendFill))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!controller.isWorking && !canSend)
+        .opacity(controller.isWorking || canSend ? 1 : 0.3)
+        .help(controller.isWorking ? "停止生成（⌘.）" : "发送（⏎）；⇧⏎ 换行")
+        .accessibilityLabel(controller.isWorking ? "停止生成" : "发送消息")
+    }
+
+    private func updateModel(_ model: String) {
+        var s = controller.settings; s.model = model.isEmpty ? nil : model; store.updateSettings(controller.id, s)
     }
 
     private func submit() {
         guard canSend else { return }
-        let t = text
-        text = ""
-        editorHeight = 22
-        if liveInTerminal {
-            controller.sendToTerminal(t)
-        } else {
-            controller.send(t)
-        }
+        let t = text; text = ""; editorHeight = 22
+        if liveInTerminal { controller.sendToTerminal(t) } else { controller.send(t) }
     }
 
-    /// Codex 输入框左下角那个「+」：选文件 / 照片 / 目录挂到这条消息上。
     private var attachButton: some View {
         Button {
             let panel = NSOpenPanel()
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = true
-            panel.allowsMultipleSelection = true
-            panel.prompt = "添加"
-            panel.message = "选要发给 Claude 的文件、照片或目录"
+            panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
+            panel.prompt = "添加"; panel.message = "选择要附加的文件、照片或目录"
             if panel.runModal() == .OK { controller.attach(urls: panel.urls) }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 15, weight: .regular))
                 .foregroundStyle(Theme.textSecondary)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Theme.chipFill))
+                .frame(width: 28, height: 28)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help("添加文件、照片或目录（也可以直接拖进来、⌘V 粘贴）")
+        .help("添加文件、照片或目录（支持拖放和 ⌘V）")
+        .accessibilityLabel("添加附件")
     }
 
-    // 目录只能在第一条消息之前换：会话一旦开始，cwd 就是 Claude Code 的会话属性了。
-    private var folderChip: some View {
-        let locked = !controller.isDraft
-        return Button {
-            guard !locked else { return }
+    private var folderButton: some View {
+        Button {
+            guard controller.isDraft else { return }
             let panel = NSOpenPanel()
-            panel.canChooseDirectories = true
-            panel.canChooseFiles = false
-            panel.allowsMultipleSelection = false
-            panel.directoryURL = URL(fileURLWithPath: controller.cwd)
-            panel.prompt = "选这个目录"
-            if panel.runModal() == .OK, let url = panel.url {
-                store.setDraftCwd(controller.id, cwd: url.path)
-            }
+            panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+            panel.directoryURL = URL(fileURLWithPath: controller.cwd); panel.prompt = "选择工作目录"
+            if panel.runModal() == .OK, let url = panel.url { store.setDraftCwd(controller.id, cwd: url.path) }
         } label: {
-            Chip(icon: "folder", title: ThreadStore.displayName(for: controller.cwd))
+            HStack(spacing: 5) {
+                Image(systemName: "folder").font(.system(size: 11))
+                Text(ThreadStore.displayName(for: controller.cwd)).lineLimit(1).truncationMode(.middle)
+                if controller.isDraft { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(locked)
-        .help(locked ? "工作目录：\(controller.cwd)（会话开始后不能换）" : "换工作目录")
+        .disabled(!controller.isDraft)
+        .help("工作目录：\(controller.cwd)\(controller.isDraft ? "" : "（会话开始后不能更改）")")
     }
 
-    private func settingsMenu(icon: String, title: String, help: String, options: [(id: String, title: String)],
+    private func settingsMenu(icon: String, title: String, options: [(id: String, title: String)],
                               selection: String, onChange: @escaping (String) -> Void) -> some View {
         Menu {
             ForEach(options, id: \.id) { option in
-                Button {
-                    onChange(option.id)
-                } label: {
-                    if option.id == selection {
-                        Label(option.title, systemImage: "checkmark")
-                    } else {
-                        Text(option.title)
-                    }
+                Button { onChange(option.id) } label: {
+                    if option.id == selection { Label(option.title, systemImage: "checkmark") }
+                    else { Text(option.title) }
                 }
             }
         } label: {
-            Chip(icon: icon, title: title, showsChevron: true)
+            HStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 10))
+                Text(title).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 11))
+            .foregroundStyle(Theme.textSecondary)
+            .padding(.vertical, 4)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(liveInTerminal)   // 终端里的会话：这几样由终端决定，这里只看不改
-        .help(controller.isWorking ? "\(help)；改动在下一轮生效" : help)
+        .disabled(liveInTerminal)
+        .help("\(title)；更改在下一轮生效")
     }
 }
 
@@ -220,22 +276,15 @@ struct Chip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1)
-            if showsChevron {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .padding(.leading, 1)
-            }
+            Image(systemName: icon).font(.system(size: 11, weight: .medium))
+            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            if showsChevron { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
         }
-        .foregroundStyle(Theme.textSecondary)
+        .foregroundStyle(Theme.textPrimary)
         .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(Theme.chipFill))
-        .contentShape(Capsule())
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.chipFill))
+        .contentShape(Rectangle())
     }
 }
 
@@ -412,38 +461,13 @@ final class SubmitTextView: NSTextView {
 
     // MARK: 拖放 / 粘贴：文件和图片不进正文，交给附件条；NSTextView 默认会把拖进来的文件路径当文字插进去。
 
-    private static let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
-
-    private func fileURLs(on pb: NSPasteboard) -> [URL] {
-        (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
-    }
-
-    private func imageData(on pb: NSPasteboard) -> Data? {
-        for t in Self.imageTypes { if let d = pb.data(forType: t) { return d } }
-        return nil
-    }
-
-    private func hasAttachable(_ pb: NSPasteboard) -> Bool {
-        !fileURLs(on: pb).isEmpty || imageData(on: pb) != nil
-    }
+    private func hasAttachable(_ pb: NSPasteboard) -> Bool { PasteboardAttachments.hasAttachable(pb) }
 
     /// 取走了就返回 true；否则由调用方交给 NSTextView 自己处理（普通文字）。
-    /// textWins：剪贴板同时有文字和图片（Excel / Numbers 复制单元格会附一张渲染图）时按文字贴。
     @discardableResult
     private func takeAttachments(from pb: NSPasteboard, source: String, textWins: Bool = false) -> Bool {
-        let urls = fileURLs(on: pb)
-        if !urls.isEmpty {
-            TestLog.write("composer \(source) files: \(urls.map(\.path))")
-            onDropFiles?(urls)
-            return true
-        }
-        if textWins, pb.string(forType: .string) != nil { return false }
-        if let data = imageData(on: pb) {
-            TestLog.write("composer \(source) image: \(data.count) bytes")
-            onDropImage?(data, source == "paste" ? "剪贴板图片.png" : "拖入的图片.png")
-            return true
-        }
-        return false
+        PasteboardAttachments.take(from: pb, source: "composer \(source)", textWins: textWins,
+                                   files: { onDropFiles?($0) }, image: { onDropImage?($0, $1) })
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -510,14 +534,20 @@ final class SubmitTextView: NSTextView {
     }
 }
 
-/// 测试钩子用的假拖放信息：只有剪贴板是真的，位置 / 图像都随便填。
+/// 测试钩子用的假拖放信息：只有剪贴板是真的，图像随便填；-testWindowDrop 会把落点和窗口也填成真的。
 final class TestDraggingInfo: NSObject, NSDraggingInfo {
     let pasteboard: NSPasteboard
-    init(pasteboard: NSPasteboard) { self.pasteboard = pasteboard }
+    let location: NSPoint
+    weak var window: NSWindow?
+    init(pasteboard: NSPasteboard, location: NSPoint = .zero, window: NSWindow? = nil) {
+        self.pasteboard = pasteboard
+        self.location = location
+        self.window = window
+    }
 
-    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingDestinationWindow: NSWindow? { window }
     var draggingSourceOperationMask: NSDragOperation { .copy }
-    var draggingLocation: NSPoint { .zero }
+    var draggingLocation: NSPoint { location }
     var draggedImageLocation: NSPoint { .zero }
     var draggedImage: NSImage? { nil }
     var draggingPasteboard: NSPasteboard { pasteboard }

@@ -13,7 +13,7 @@ import SwiftUI
 //         DESIGN.md, and every shipping raster carrying its provenance
 
 @main
-struct ClaudeShellApp: App {
+struct ClaudexShellApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let store = ThreadStore.shared
 
@@ -22,13 +22,14 @@ struct ClaudeShellApp: App {
             ContentView()
                 .environment(store)
                 .environment(AccountStore.shared)
+                .tint(Theme.textPrimary)
                 .frame(minWidth: 880, minHeight: 560)
         }
         .windowToolbarStyle(.unified)
         .defaultSize(width: 1200, height: 800)
         .commands {
             CommandGroup(replacing: .appTermination) {
-                Button("退出 Claude Shell") { AppDelegate.quit() }
+                Button("退出 Claudex Shell") { AppDelegate.quit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
             CommandGroup(replacing: .newItem) {
@@ -51,7 +52,7 @@ struct ClaudeShellApp: App {
                     }
                 }
             }
-            // 账号：列出保存过的登录态，选一个就切（终端一起换）；⌃1…⌃9 直达。
+            // 账号选择只影响本应用；推送至终端 / Codex App 是单独的操作。
             CommandMenu("账号") {
                 AccountMenuItems()
             }
@@ -80,9 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// SwiftUI 的 `.sheet` 开着时 `terminate:` 会被它按「用户取消」吞掉（⌘Q 也一样），
     /// 所以先把登录面板收了，下一圈 run loop 再退。
     @MainActor static func quit() {
-        if let session = AccountStore.shared.loginSession {
-            session.cancel()
-            AccountStore.shared.loginSession = nil
+        let store = AccountStore.shared
+        if store.loginSession != nil || store.addingProvider {
+            store.loginSession?.cancel()
+            store.loginSession = nil
+            store.addingProvider = false
             DispatchQueue.main.async { NSApp.terminate(nil) }
         } else {
             NSApp.terminate(nil)

@@ -2,6 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claudex Shell 对话</title>
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="transcript.css">
 <link rel="stylesheet" href="icons.css">
@@ -10,8 +12,8 @@
 </head>
 <body>
 <main id="root">
-  <div id="list"></div>
-  <div id="working" hidden><span class="pulse"></span><span id="working-text"></span></div>
+  <div id="list" role="log" aria-label="对话内容"></div>
+  <div id="working" role="status" hidden><span class="pulse"></span><span id="working-text"></span></div>
 </main>
 <script src="transcript.js"></script>
 </body>

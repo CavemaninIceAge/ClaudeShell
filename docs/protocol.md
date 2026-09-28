@@ -1,4 +1,8 @@
-# Claude Code stream-json 协议要点
+# Claudex Shell 原生引擎接入
+
+创建、恢复、生成、工具调用、审批、停止和持久化由 Claude Code / Codex 原生引擎执行。应用仅维护 UI 选择、标题、隐藏状态、账号选择及接管来源等元数据，不模拟另一个 Agent 引擎。
+
+## Claude Code stream-json 协议要点
 
 2026-09-13 在 Claude Code 2.1.270 上实测（探针脚本当时放在 scratchpad，结论都在这里）。app 里的解析在
 `App/Sources/Engine/ClaudeEvents.swift`，进程管理在 `ClaudeProcess.swift`。
@@ -98,7 +102,7 @@ messagingSocketPath, name`。只有 `entrypoint == "cli"` 才是终端里开着�
 
 ```json
 {"msgV":1,"msg_id":"<uuid>","type":"user","priority":"next","from":"uds:/tmp/cc-socks/<本进程 pid>.sock",
- "message":{"role":"user","content":"<cross-session-message from=\"uds:/tmp/cc-socks/<pid>.sock\" from-name=\"Claude Shell\" from-mode=\"prompting\">\n正文\n</cross-session-message>"}}
+ "message":{"role":"user","content":"<cross-session-message from=\"uds:/tmp/cc-socks/<pid>.sock\" from-name=\"Claudex Shell\" from-mode=\"prompting\">\n正文\n</cross-session-message>"}}
 ```
 
 - 信封属性顺序固定 `from, from-session, hop-chain, from-name, from-mode`，开闭标签各带一个换行，正文里的
@@ -108,7 +112,7 @@ messagingSocketPath, name`。只有 `entrypoint == "cli"` 才是终端里开着�
 - `from` 用 app 自己的 pid；我们不真的监听那个套接字，所以对方回信（SendMessage 回 from 地址）会失败——正文末尾附了一句
   说明"这是用户本人、请直接在对话里答、别回信"（`PeerMessenger.userNote`），对方就会在终端里正常回答。
 - 终端那边空闲时消息直接开一轮；忙着时在两次工具调用之间送到（`absorbed_mid_turn`，见上面的 `attachment`）。
-  终端里显示为一行 `› Message from @Claude Shell: 首行…`，ctrl+o 看全文。
+  终端里显示为一行 `› Message from @Claudex Shell: 首行…`，ctrl+o 看全文。
 - 同一会话短时间连发有限流（桶 30、每秒回 0.5），30 秒内完全相同的正文会被当重复丢掉。
 
 ## 附件：图片 / 文件 / 目录（2026-09-19 在 2.1.273 上实测）
@@ -127,18 +131,39 @@ app 里的组装在 `App/Sources/Model/Attachments.swift`（`OutgoingMessage` �
   `~/Library/Caches/Claude Shell/pasted/<id>.png`。这条路径没有实测过（会打扰用户正在跑的终端会话）。
 - **侧栏索引**：`SessionIndex.parse` 原来只读文件头 512 KB，首条消息带图片时一行就有 1 MB 以上，截不到完整的一行，整个会话不进列表。
   现在按 512 KB 一块往下读到首条真正的用户消息为止（上限 16 MB）；这一改让用户已有的 5 个终端会话（首条就贴了图）也进了列表。
+- **已有对话里拖到正文上（2026-09-20 修）**：09-19 只验了输入框和 SwiftUI onDrop 两条路，漏了正文是 WKWebView 的情况。
+  WKWebView 一出生就登记了 17 种拖放类型（`NSFilenamesPboardType`、`public.png`、TIFF、URL……），AppKit 派拖放的规则是
+  「落点下面最深的、登记过的视图接」，所以已有对话里拖到正文那一大片，WebKit 接了又回「不收」（draggingEntered 回 copy，
+  draggingUpdated 回 none），光标变禁止号、松手什么也不发生；新对话没有正文才显得能用。ThreadView 上那条 SwiftUI onDrop
+  根本轮不到（它没在任何 NSView 上登记类型，只能接没被子视图截走的拖放）。
+  修法：`TranscriptWKWebView`（TranscriptWebView.swift）自己接文件 / 图片（和输入框 `SubmitTextView` 用同一套
+  `PasteboardAttachments` 判断，AttachmentStrip.swift），挂到附件条并让输入框亮边；其他类型照旧交给 WebKit。
+  验证：`-testWindowDrop` 在正文正中投递，修前 `entered=1 updated=0 attachments=0`，修后 `entered=1 updated=1 attachments=1`，
+  接着 `-testPrompt` 把图发进已有对话，haiku 答「兔子」，`-testWebSnapshot` 里图和回答都在。
 
-自动化验证（都不发全局键鼠事件，窗口在别的桌面上也能跑）：
+## 当前验证方式
 
-```
-open -n "Claude Shell.app" --args -testLog 1 -testCwd <scratchpad 目录> -testModel haiku \
-  -testDropFiles "/a.heic:/b.txt:/dir"  # 进程内造 NSDraggingInfo 喂给输入框（draggingEntered → performDragOperation）
-  -testDropImage /x.png                  # 图片字节拖进输入框（浏览器拖图那种）
-  -testPasteFiles "/a:/b" -testPasteImage /x.png   # ⌘V 路径，用私有剪贴板，不动用户剪贴板
-  -testProviderDrop "/a:/b"             # SwiftUI onDrop 那条 NSItemProvider 路径（窗口正文区）
-  -testAttach "/a:/b"                    # 直接 controller.attach
-  -testPrompt "…" -testPromptDelay 6     # 等附件挂好再发
-  -testWebSnapshot /out.png [-testScrollTo ".att-image"]   # 网页层自截图：窗口不在当前桌面时 WebKit 不往窗口画，
-                                                            # screencapture 拿到的正文是空白，只有 takeSnapshot 靠得住
-  -testAppearance dark                   # 只改本进程外观
-```
+运行 `./scripts/test.sh`，使用内存凭据、临时目录、模拟 app-server。网页与原生视图在 `.prohibited` 激活策略下离屏渲染，不打开窗口，不切换系统外观，不使用屏幕录制或全局输入。历史的 `-testPrompt` 等钩子不在自动回归中运行，它们会发送真实请求。
+
+## Codex app-server
+
+使用安装在本机的 `codex app-server --listen stdio://`，协议依据其生成的 schema 与[官方文档](https://learn.chatgpt.com/docs/app-server)。
+
+- `initialize` / `initialized` 建立连接；每个请求带独立 ID、超时和进程结束处理。
+- `thread/start` 创建；`thread/resume` 以原线程 ID 与原路径恢复。`CODEX_HOME` 中会话目录指向原生存储，登录态独立。
+- `turn/start` 发送文本与图片；`turn/interrupt` 停止。模型使用 `model/list` 返回的选项，也允许手动填写模型 ID。
+- `item/*` 与 `turn/*` 通知适配到只负责显示的 transcript；真正工具调用始终在 Codex 内执行。
+- 命令、文件、权限审批与 `requestUserInput` 由应用渲染，结果回传原始 RPC ID。未支持的交互明确拒绝并提示，避免挂起。
+- 本地 rollout 索引只读，用于启动前发现历史和显示内容；不修改原文件、不编造引擎消息或重放工具。
+
+安装版本的 app-server 部分字段为实验性协议。缺失引擎、请求错误、进程退出和超时均展示在会话中。
+
+## Claude 接管 Codex 会话
+
+1. 用户选择「用 Claude 接管」，读取已结束源会话的可见内容。
+2. 在私有目录生成 0600 Markdown 上下文文件：保留完整用户/助手正文和附件引用。内嵌图片原样导出为 0600 文件，本地图片保留路径，远程图片只保留引用，不自动下载；纯图片消息也保留。工具结果保留最多4000字符摘要并明确标注截断；不导出系统指令、隐藏推理或认证配置。
+3. 创建一个不同 ID 的 Claude 原生草稿，保存来源信息；不修改原 Codex 历史。
+4. 用户发送下一步要求时，首条原生 Claude 消息包含上下文文件路径，指示 Claude 使用自己的文件工具读取。后续回复、工具与权限由 Claude Code 自身处理。
+5. 消息成功写入原生 stdin 后标记上下文已交接；失败则保留待交接状态。如果写入成功后应用意外退出，下次通过原生会话中的交接标记去重。来源栏始终可回到原对话。
+
+这是显式的跨引擎上下文交接，不把 Codex 的内部状态、系统权限、隐藏推理或原始会话 ID 冒充 Claude 的会话。

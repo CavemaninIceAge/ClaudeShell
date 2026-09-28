@@ -18,28 +18,51 @@ enum KeychainCLI {
         return legal && !name.isEmpty ? name : "claude-code-user"
     }
 
-    /// 条目不存在或钥匙串锁着都返回 nil；调用方自己决定怎么提示。
+    /// Convenience for optional discovery. Shared-state mutations use readChecked instead.
     static func read(service: String) -> String? {
-        let r = run("find-generic-password -s \(quote(service)) -a \(quote(accountName)) -w")
-        guard r.status == 0 else { return nil }
+        try? readChecked(service: service)
+    }
+
+    /// Only a missing item is nil. A locked/unreadable vault must never be backed up as an empty login.
+    static func readChecked(service: String) throws -> String? {
+        try validate(service)
+        let r = run(arguments: ["find-generic-password", "-s", service, "-a", accountName, "-w"])
+        if r.status == 44 { return nil } // errSecItemNotFound (-25300), shell exit code
+        guard r.status == 0 else {
+            throw Failure(message: "读取钥匙串失败（状态 \(r.status)）。请确认登录钥匙串已解锁，原登录态未被覆盖。")
+        }
         var s = r.stdout
         if s.hasSuffix("\n") { s.removeLast() }
-        return s.isEmpty ? nil : s
+        return s
     }
 
     /// `-U` 让已有条目原地更新（保留访问控制），没有就新建。
     static func write(service: String, secret: String) throws {
-        guard !secret.contains("\n"), !secret.contains("\r") else {
-            throw Failure(message: "令牌里有换行，无法经 security 写入")
-        }
-        let r = run("add-generic-password -U -s \(quote(service)) -a \(quote(accountName)) -w \(quote(secret))")
+        try validate(service)
+        try validate(secret)
+        let r = run(arguments: ["-i"], command: "add-generic-password -U -s \(quote(service)) -a \(quote(accountName)) -w \(quote(secret))")
         guard r.status == 0 else {
-            throw Failure(message: "写入钥匙串失败（\(service)）：\(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+            // security may echo its command in stderr. Never surface a credential-bearing command.
+            throw Failure(message: "写入钥匙串失败（状态 \(r.status)）。请确认登录钥匙串已解锁。")
         }
     }
 
     static func delete(service: String) {
-        _ = run("delete-generic-password -s \(quote(service)) -a \(quote(accountName))")
+        try? deleteChecked(service: service)
+    }
+
+    static func deleteChecked(service: String) throws {
+        try validate(service)
+        let r = run(arguments: ["delete-generic-password", "-s", service, "-a", accountName])
+        guard r.status == 0 || r.status == 44 else {
+            throw Failure(message: "删除钥匙串条目失败（状态 \(r.status)）。")
+        }
+    }
+
+    static func validate(_ value: String) throws {
+        guard !value.contains("\n"), !value.contains("\r"), !value.contains("\0") else {
+            throw Failure(message: "钥匙串数据含不支持的控制字符。")
+        }
     }
 
     /// `security -i` 的行解析认双引号，引号内 `\\` 和 `\"` 是转义（2026-09-16 实测）。
@@ -55,10 +78,20 @@ enum KeychainCLI {
         return out + "\""
     }
 
-    private static func run(_ command: String) -> (status: Int32, stdout: String, stderr: String) {
+    private final class Capture: @unchecked Sendable {
+        let lock = NSLock()
+        var stdout = Data()
+        var stderr = Data()
+        func set(_ data: Data, output: Bool) {
+            lock.lock(); defer { lock.unlock() }
+            if output { stdout = data } else { stderr = data }
+        }
+    }
+
+    private static func run(arguments: [String], command: String? = nil) -> (status: Int32, stdout: String, stderr: String) {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        proc.arguments = ["-i"]
+        proc.arguments = arguments
         let stdin = Pipe(), stdout = Pipe(), stderr = Pipe()
         proc.standardInput = stdin
         proc.standardOutput = stdout
@@ -68,13 +101,23 @@ enum KeychainCLI {
         } catch {
             return (-1, "", error.localizedDescription)
         }
-        stdin.fileHandleForWriting.write(Data((command + "\n").utf8))
+        let capture = Capture(), group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            capture.set(stdout.fileHandleForReading.readDataToEndOfFile(), output: true)
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            capture.set(stderr.fileHandleForReading.readDataToEndOfFile(), output: false)
+            group.leave()
+        }
+        if let command { try? stdin.fileHandleForWriting.write(contentsOf: Data((command + "\n").utf8)) }
         try? stdin.fileHandleForWriting.close()
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
         proc.waitUntilExit()
+        group.wait()
         return (proc.terminationStatus,
-                String(data: outData, encoding: .utf8) ?? "",
-                String(data: errData, encoding: .utf8) ?? "")
+                String(data: capture.stdout, encoding: .utf8) ?? "",
+                String(data: capture.stderr, encoding: .utf8) ?? "")
     }
 }

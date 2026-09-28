@@ -6,9 +6,9 @@ import Foundation
 /// 一次连接写一行 JSON（user 帧）就关；macOS 上不需要 auth 行，对方靠内核报的连接方 pid 认人。对方不在这条连接上回话：
 /// 消息会出现在终端的对话里（"› Message from @Claude Shell: …"），回答照常落进会话文件，app 靠 tail 会话文件同步。
 enum PeerMessenger {
-    static let senderName = "Claude Shell"
+    static let senderName = "Claudex Shell"
     /// 附在正文后面给对方 Claude 看的说明：它会被告知"这是别的会话发来的"，不说清是用户本人，它会试着用 SendMessage 回信。
-    static let userNote = "（这句话是用户本人在 Claude Shell 里输入的，请像回答用户一样直接在本对话里回答；不要用 SendMessage 回信，那个地址收不到。）"
+    static let userNote = "（这句话是用户本人在 Claudex Shell 里输入的，请像回答用户一样直接在本对话里回答；不要用 SendMessage 回信，那个地址收不到。）"
 
     static func body(forUserText text: String) -> String { text + "\n\n" + userNote }
 

@@ -1,24 +1,27 @@
 #!/bin/bash
-# Release 构建 → 拷到 /Applications → 加进 Dock。用法：./scripts/install.sh
+# 后台构建和安装；不退出应用、不改 Dock、不打开窗口。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ./scripts/build.sh Release
-APP="Claude Shell"
+APP="Claudex Shell"
 SRC="DerivedData/Build/Products/Release/$APP.app"
 DST="/Applications/$APP.app"
-# 只结束 /Applications 里那份正在跑的实例，DerivedData 里的调试实例不动（可能正有人在用）。
-ps -axo pid=,comm= | awk -v p="$DST/" 'index($0, p) { print $1 }' | while read -r pid; do kill "$pid" 2>/dev/null || true; done
-sleep 1
-rm -rf "$DST"
-cp -R "$SRC" "$DST"
-echo "已安装：$DST"
-# Dock 存进去后路径里的空格会变成 %20，两种写法都要认，否则每次安装都多加一个图标。
-if ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -q "Claude%20Shell.app\|$APP.app"; then
-  defaults write com.apple.dock persistent-apps -array-add \
-    "<dict><key>tile-data</key><dict><key>file-data</key><dict><key>_CFURLString</key><string>$DST</string><key>_CFURLStringType</key><integer>0</integer></dict></dict></dict>"
-  killall Dock
-  echo "已加进 Dock"
-else
-  echo "Dock 里已经有了"
+if ps -axo comm= | awk -v p="$DST/Contents/MacOS/" 'index($0,p)==1 {found=1} END {exit !found}'; then
+  echo "$APP 正在运行。请在方便时退出后再次运行安装脚本；已构建：$SRC" >&2
+  exit 1
 fi
-open "$DST"
+STAGE="$(mktemp -d /Applications/.claudex-shell-install.XXXXXX)"
+trap 'rm -rf "$STAGE"' EXIT
+ditto "$SRC" "$STAGE/$APP.app"
+codesign --verify --deep --strict "$STAGE/$APP.app"
+if [ -e "$DST" ]; then
+  BACKUP="/Applications/$APP.previous-$(date +%Y%m%d-%H%M%S).app"
+  mv "$DST" "$BACKUP"
+  if ! mv "$STAGE/$APP.app" "$DST"; then
+    mv "$BACKUP" "$DST"
+    exit 1
+  fi
+else
+  mv "$STAGE/$APP.app" "$DST"
+fi
+echo "已安装：${DST}（未启动，未改动正在运行的旧版）"

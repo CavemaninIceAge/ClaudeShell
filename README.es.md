@@ -1,52 +1,15 @@
-# Claude Shell
+# Claudex Shell
 
-*Una carcasa nativa discreta sobre el Claude Code que ya usas.*
+Un espacio de trabajo nativo de macOS para Claude Code y Codex.
 
-[English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [Français](README.fr.md) · [日本語](README.ja.md) · **Español** · [Deutsch](README.de.md)
+Seleccionar una cuenta solo cambia Claudex Shell. «Push to terminal» y «Push to Codex App» son acciones explícitas e independientes de esa selección. Se pueden guardar los accesos locales de Claude, GLM y Codex. La CLI y la app de Codex comparten el acceso guardado; puede ser necesario volver a abrir los clientes en ejecución.
 
-Claude Shell es una pequeña app de macOS que le pone a tu Claude Code local una cara al estilo de Codex. A la izquierda: todas las sesiones de `~/.claude/projects`, agrupadas por proyecto — incluidas las que iniciaste en una terminal. A la derecha: la conversación actual, con texto en Markdown, pasos de razonamiento y de herramientas plegables, y tarjetas de permisos. Por debajo no es más que `~/.local/bin/claude`, así que el modelo, los modos de permiso, `CLAUDE.md`, la memoria, las skills, los servidores MCP y los hooks son exactamente los mismos que en tu terminal.
+[English — full documentation](README.md) · [简体中文](README.zh-Hans.md)
 
-## Solo una carcasa — y ahí está la gracia
-
-No reimplementa Claude Code. No trae su propio cliente de modelo, ni una autenticación aparte, ni una segunda copia de tus datos. Lanza el mismo binario `claude` en el que ya confías y lee los mismos archivos de sesión que este ya escribe. La app solo guarda para sí cuatro cositas — un título renombrado, una marca de oculto, los ajustes por conversación y la lista de cuentas que has guardado (identidades en un archivo JSON, tokens en tu llavero de inicio de sesión) — bajo `~/Library/Application Support/Claude Shell/`. Las conversaciones en sí viven siempre en `~/.claude`, y nada sale de tu equipo que la línea de comandos no fuera a enviar de todos modos.
-
-Así obtienes una ventana nativa de verdad — un icono en el Dock, ⌘N, un campo de texto como es debido — sin conceder a nada una vista más amplia de tus archivos o tus datos que la que la línea de comandos ya tiene. El mismo límite de confianza, con mejor superficie.
-
-## Qué hace
-
-- **Sigue tu terminal, en directo.** Una sesión en marcha en una terminal muestra un punto verde; ábrela y Claude Shell sigue el archivo de sesión, de modo que cada paso del otro lado aparece aquí en tiempo real.
-- **Responde de vuelta en la terminal.** Escribe en una sesión de terminal activa y tu mensaje se le entrega mediante la mensajería entre sesiones del propio Claude Code — la terminal responde y la respuesta se sincroniza aquí.
-- **Muestra lo que muestra la terminal.** Resúmenes recap, mensajes de tus otras sesiones, entrada en cola, avisos de compactación de contexto y el nivel de esfuerzo en la línea de razonamiento.
-- **Arrastra archivos y fotos, pega capturas.** Arrastra archivos, fotos o carpetas enteras a la ventana (o pulsa el «+» del cuadro de entrada, o ⌘V una captura de pantalla) y se adjuntan al mensaje que escribes. Las imágenes llegan a Claude como bloques de imagen (HEIC y similares se convierten a JPEG y se reducen al límite de la API); archivos y carpetas se referencian como lo hace el propio Claude Code, con `@ruta` — los archivos de texto y los listados de carpetas se adjuntan solos, los PDF y demás los lee Claude por su cuenta. Las imágenes pegadas en la terminal también aparecen aquí como miniaturas.
-- **Modelo y esfuerzo explícitos.** Las píldoras y la barra de herramientas siempre muestran el valor realmente en vigor (`Opus 5 (1M) · xhigh`), incluido `ultracode` — nada escondido tras un «seguir los ajustes».
-- **Un proceso por conversación**, mantenido caliente y reanudado con `--resume` tras quedar inactivo.
-- **Varias cuentas, un clic para cambiar.** Añade una segunda cuenta de Claude una sola vez (el propio `claude auth login` de la CLI, en el navegador); después, elige una cuenta al pie de la barra lateral o pulsa ⌃1…⌃9. El cambio escribe el inicio de sesión guardado de vuelta en la entrada del llavero del propio Claude Code, así que la terminal también cambia — las sesiones ya abiertas pasan a la nueva cuenta en su siguiente petición, sin reiniciar, sin navegador y sin volver a iniciar sesión.
-
-## Ejecutar
-
-```
-./scripts/build.sh            # build Debug en DerivedData/
-./scripts/install.sh          # build Release → /Applications → añadir al Dock
-./scripts/shot.sh out.png     # captura la ventana en ejecución
+```sh
+./scripts/build.sh Release
+./scripts/test.sh
+./scripts/install.sh
 ```
 
-Atajos: ⌘N nuevo · ⇧⌘N nuevo-en-carpeta · ⏎ enviar · ⇧⏎ salto de línea · ⌘. detener · ⌘R actualizar · ⌃1…⌃9 cambiar de cuenta.
-
-## Por dentro
-
-- Swift 6 + SwiftUI + AppKit, proyecto generado con XcodeGen, sin dependencias Swift de terceros.
-- El texto se renderiza en una `WKWebView` con marked + highlight.js incluidos sin conexión.
-- Sin sandbox (lanza un proceso hijo y lee `~/.claude`), firmada para ejecución local.
-- La entrega entre sesiones, el protocolo stream-json, el cambio de cuenta y el sistema de diseño están documentados en `docs/` y `DESIGN.md`.
-
-## Estructura
-
-```
-App/Sources/Engine/   proceso hijo, stream-json → eventos, entrega entre sesiones
-App/Sources/Model/    una conversación, la lista de sesiones, el modelo del transcript
-App/Sources/UI/       barra lateral, vista de hilo, compositor, tarjeta de permisos, tema
-App/Resources/web/    transcript.html / .css / .js — el texto de las conversaciones
-docs/ · DESIGN.md · PRODUCT.md   notas de protocolo, sistema de diseño, registro de producto
-```
-
-Requiere macOS 15+ y una instalación funcional de Claude Code (`~/.local/bin/claude`).
+macOS 15+ · Swift 6 · XcodeGen

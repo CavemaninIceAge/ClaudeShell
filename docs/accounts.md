@@ -1,65 +1,66 @@
-# 多账号：保存登录态、一键切换
+# Claudex Shell 账号与推送
 
-2026-09-16 在 Claude Code 2.1.273 上实测。代码：`App/Sources/Engine/ClaudeAuth.swift`（登录态放哪）、
-`Engine/KeychainCLI.swift`（钥匙串读写）、`Model/AccountStore.swift`（清单、切换、添加账号的登录流程）、
-`UI/AccountViews.swift`（侧栏底部账号行、登录面板）。
+## 应用内选择
 
-## 结论
+默认的账号选择只写 Claudex Shell 的选择记录和私有运行配置，不改本机终端或 Codex App 的登录态。
 
-- Claude Code 的登录态 = 钥匙串一条 `Claude Code-credentials`（账户名 `$USER`，内容是 JSON：access / refresh token、
-  过期时间、订阅类型）+ `~/.claude.json` 里的 `oauthAccount`（accountUuid、邮箱、组织）。两处一起换 = 换账号。
-- app 给每个账号存一份**快照**：钥匙串 `Claude Shell-account-<accountUuid>`（内容和上面那条一模一样）+
-  `~/Library/Application Support/Claude Shell/accounts.json`（只有身份信息，没有令牌）。
-- **切换** = 把目标账号的快照写回 `Claude Code-credentials`，把它的 `oauthAccount` 写回 `~/.claude.json`。
-  **终端里已经开着的会话会自动跟着换，不用重开、不用重登**（2026-09-16 实测，见下「终端会话跟随」）；
-  app 自己起的 `claude` 进程当场收掉，下次发送 `--resume` 拉起就是新账号。
-- 切换前先把当前登录态同步回它自己的快照（`sync`），所以在生效期间刷新过的令牌不会丢——切走再切回来拿的是最新的。
-- 终端里 `/login` 换了账号，app 下次 `sync`（启动、激活、每 90 秒）自动收录，不用在 app 里再登一次。
+- Claude：每个订阅账号使用私有 `CLAUDE_CONFIG_DIR` 和独立的 Claude Code Keychain 条目。
+- GLM / API：通过 Claude 引擎运行；每个提供方有独立配置，密钥由 Keychain helper 提供。
+- Codex：每个账号使用私有 `CODEX_HOME`；其 `auth.json` 权限为 0600，目录为 0700。保存的完整认证快照在 Keychain。
 
-## 终端会话跟随（2026-09-16 实测）
+独立的**认证配置**与原生**会话存储**分开：运行目录引用 CLI 自己的会话目录，新建与恢复仍由 Claude Code / Codex 引擎完成。应用只读索引和展示记录，不改写 rollout 或自行模拟引擎。
 
-测法：把一个账号的快照写进沙盒配置目录（`CLAUDE_CONFIG_DIR` = 临时目录，钥匙串条目名跟着变），在那个目录里开会话，
-中途用 app 切换沙盒里的登录态，看同一个没重启的会话报回来的**服务端数据**属于哪个账号（两个账号的用量指纹差别很大）。
+Claude 的全局 `CLAUDE.md`、Codex 的 `AGENTS.md` / `AGENTS.override.md` 与各自规则目录继续引用本机原文件。Codex 的顶层模型、推理强度和上下文相关默认值同步至运行配置；认证路由仍固定为所选账号，不整体复制提供方、插件、MCP 或技能配置。
 
-| 会话形态 | 切换前 | 切换后（同一进程，没重启） |
+当前正在生成的回复继续使用启动它的账号；应用内换号后，下一个回合重建进程并使用新选择。运行在外部终端的 Claude 会话仍由那个终端的账号处理，输入框会注明这一点。
+
+## 保存本机登录态
+
+「保存本机登录态（Claude / GLM / Codex）」读取本机配置：
+
+- Claude 的 `oauthAccount` 与 Claude Code Keychain 登录态；
+- 已存在的 GLM/API 提供方配置，或本机的兼容 API 地址、静态密钥、可识别的只读 Keychain helper；
+- Codex 的 `auth.json`，支持 ChatGPT OAuth 和 API key 文件登录。
+
+不会执行任意 `apiKeyHelper` shell 脚本来获取密钥。未知 helper 需要通过「添加 GLM / API 提供方」手动保存。
+
+Codex 若配置为 `keyring`、`auto` 或 `ephemeral`，此版本会明确拒绝文件导入/推送，避免改了 `auth.json` 却假报成功；需要先用其原生登录功能创建 file 模式缓存。当前本机使用默认 file 模式。
+
+保存时比较已知刷新时间，避免旧快照覆盖更新后的令牌。读取错误不作为“空登录态”写回。JWT 内容只用作显示账号标签，不作为登录成功的验证。
+
+## 显式推送
+
+| 动作 | 影响范围 | 生效方式 |
 |---|---|---|
-| `claude -p` 长活进程 | `rate_limit_event`：five_hour 0.20 / seven_day 0.99 | 切换后 **0.2 秒**发出的那一轮：0.05 / 0.01 —— 已经是新账号 |
-| 交互式 TUI（伪终端） | `/usage`：本会话 20% / 本周 99%；`/status` 邮箱 = 旧账号 | `/status` 邮箱当场变成新账号；跑完下一轮后 `/usage` 变成 6% / 1% |
+| 切换 Claude / GLM / Codex 账号 | Claudex Shell | 后续应用内回合 |
+| 推送 Claude / GLM 至终端 | 本机 Claude Code 的共享配置 | 建议新开 CLI 会话；已有 shell 环境变量仍可能覆盖配置 |
+| 推送 Codex 至终端 | Codex CLI / Desktop 共用认证缓存 | 新 CLI 进程读取 |
+| 推送至 Codex App | 同上，同时影响 Codex CLI | 已运行桌面端可能需要用户重新打开 |
+| 撤回上次推送 | 恢复上次推送前的目标文件和凭据 | 如目标在推送后被改过，拒绝盲目覆盖 |
 
-结论：**下一次请求就用新账号**，没有观察到需要等待的缓存窗口。唯一的滞后是 `/usage` 面板里的数字要等下一轮才刷新
-（面板自己缓存，不是登录态没换）。正在跑的那一轮用旧令牌跑完，不会中断。
+推送不结束、不启动、不前置终端或 Codex App。应用不会声称已对运行中的桌面端完成热切换。
 
-app 切完会在侧栏账号行下面说一句「终端里 N 个会话已跟着换」（N = `~/.claude/sessions` 里活着的终端会话数）。
+## 备份与错误恢复
 
-## 添加账号（不碰当前登录态）
+推送事务先将原值和计划写入的摘要保存至独立 Keychain 备份，再执行写入。磁盘标记只保存编号和标签；待完成事务与最近成功事务分别记录。新推送失败时保留上一次成功推送的撤销记录；中断或部分恢复失败后，可以再次点击撤销继续恢复。
 
-钥匙串条目名的规则（2.1.273 源码）：设了 `CLAUDE_CONFIG_DIR`（且没设 `CLAUDE_SECURESTORAGE_CONFIG_DIR`）时，
-条目名变成 `Claude Code-credentials-<sha256(配置目录, NFC)[0..<8]>`，`.claude.json` 也搬到 `$CLAUDE_CONFIG_DIR/.claude.json`。
-所以「添加账号」是：
+撤回时接受原值或本次计划写入的值。如果用户或原生 CLI 随后改过文件、刷新过凭据，则保留这些更新并提示备份仍在。读取备份失败不会被当成不存在的凭据覆盖回去。
 
-1. 建临时目录 `~/Library/Application Support/Claude Shell/login-<uuid>/`，用 `CLAUDE_CONFIG_DIR=<它>` 起
-   `claude auth login --claudeai`。新账号会写进一条独立的钥匙串条目，当前账号纹丝不动。
-2. `claude auth login` 的流程是固定的「贴授权码」：打开浏览器 → 用户登录 → 页面（`platform.claude.com/oauth/code/callback`）
-   给一串授权码 → 贴回 stdin（提示 `Paste code here if prompted >`）→ 退出码 0。有没有 TTY 都一样（用 `script` 包一层也不走
-   localhost 回调），所以面板上就是一个「授权码」输入框。
-3. 退出 0 后：读临时条目 + 临时 `.claude.json` 的 `oauthAccount` + `claude auth status --json`，写成快照，删掉临时条目和目录，
-   然后直接切到新账号。
-4. 登录到一半取消 / 退出 app：杀掉 `claude auth login`（它不会因为 stdin 关了自己退出），临时东西下次启动时扫掉。
+配置写入保留无关设置；合法软链接写到其原目标。损坏的元数据在建立新清单前另存备份。原有 provider backup 迁移至 Keychain，迁移成功后才移除旧清单中的备份。
 
-## 钥匙串为什么走 `security` 命令
+## 兼容旧版与位置
 
-Claude Code 自己就是用 `/usr/bin/security` 写钥匙串的，条目的访问控制里只有 `security`。app 若用 Security.framework 直接读，
-每条都会弹「Claude Shell 想访问…」。走 `security -i`（交互模式，命令从 stdin 喂）既不弹窗，令牌也不出现在进程参数里。
-`add-generic-password -U` 原地更新，创建时间和访问控制都保留（实测 cdat 不变）。
+显示名改为 **Claudex Shell**，保留：
 
-## 边界
+- bundle ID：`com.skywalker.claudeshell`；
+- 元数据根：`~/Library/Application Support/Claude Shell/`；
+- 旧 Claude 账号条目：`Claude Shell-account-<id>`；
+- 旧 API 提供方条目：`Claude Shell-provider-<id>`，外部条目如 `zhipu-api-key` 继续引用。
 
-- 只支持 claude.ai 订阅账号（`--claudeai`）。Console / API key 账号（`--console`、`ANTHROPIC_API_KEY`）不在清单里，也不会被收录。
-- 「移除账号」只删快照，不动本机当前登录态；正在生效的账号不能删，先切走。
-- `~/.claude.json` 是整个读出来、只改 `oauthAccount`、再原子写回（0600、按键排序、缩进两格）。Claude Code 自己也频繁写这个文件，
-  理论上有极小的写覆盖窗口，只影响它当时正在改的那一个键。
-- 残余风险：切换的同一瞬间，某个终端会话如果正好在刷新旧账号的令牌并写回钥匙串，可能盖掉刚写进去的新账号令牌；
-  下次 `sync` 会把那份令牌记到新账号名下（身份对不上）。窗口只有一次写入的宽度，实测没撞上过。
-  真撞上了：把两个账号各重新添加一次。
-- 沙盒验证：`open -n "Claude Shell.app" --args -testClaudeConfigDir <临时目录> -testAccountsFile <临时清单> -testSwitchAccount <id>`
-  让登录态的位置整个换到临时目录（钥匙串条目名跟着变），真账号不受影响；`-testBeginLogin 1` 启动即弹登录面板。
+新数据包括 `codex-accounts.json`、`runtime/claude/`、`runtime/codex/` 和不含秘密的推送标记。
+
+## 验证
+
+`scripts/test.sh` 用临时文件和内存凭据存储验证：隔离登录目录、原生会话目录引用、刷新凭据保留、错误配置保护、事务恢复、撤回冲突与凭据不落入清单。测试不访问真实 Keychain，不更改当前账号，也不发送推理请求。
+
+参考：[Codex authentication](https://learn.chatgpt.com/docs/auth)、[Codex App Server](https://learn.chatgpt.com/docs/app-server)。

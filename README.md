@@ -1,52 +1,49 @@
-# Claude Shell
+# Claudex Shell
 
-*A quiet native shell around the Claude Code you already run.*
+A native macOS workspace for your local **Claude Code and Codex** conversations, with saved Claude, GLM/API-provider, and Codex accounts.
 
-**English** · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [Français](README.fr.md) · [日本語](README.ja.md) · [Español](README.es.md) · [Deutsch](README.de.md)
+[简体中文](README.zh-Hans.md) · [Account behavior](docs/accounts.md) · [Protocol](docs/protocol.md)
 
-Claude Shell is a small macOS app that puts a Codex-style face on your local Claude Code CLI. On the left: every session under `~/.claude/projects`, grouped by project — including the ones you started in a terminal. On the right: the current conversation, with Markdown prose, collapsible thinking and tool steps, and permission cards. Underneath it is just `~/.local/bin/claude`, so the model, permission modes, `CLAUDE.md`, memory, skills, MCP servers, and hooks are all exactly what you already have in your terminal.
+## Conversations
 
-## Just a shell — and that's the point
+- A quiet Codex-inspired workspace: searchable project sidebar, engine badges, centered conversation column, Markdown, collapsible thinking/tools, and native composer.
+- Choose **Claude** or **Codex** when starting a conversation. Existing conversations keep their engine, so their history and session IDs cannot accidentally be sent to the other CLI.
+- Claude uses its local stream-JSON protocol. Codex uses its official stdio app-server protocol, including streaming replies, tool progress, approvals, stop, and resume.
+- Local Claude and Codex histories appear together. Files and images can be attached to messages.
+- **Continue with Claude** from a Codex conversation: start a genuine Claude Code session with a private context attachment containing the prior visible conversation. The source remains available and unchanged.
 
-It doesn't reimplement Claude Code. It ships no model client of its own, no separate auth, no second copy of your data. It launches the same `claude` binary you already trust and reads the same session files it already writes. The app keeps only four tiny things of its own — a renamed title, a hidden flag, per-conversation settings, and the list of accounts you've saved (identities in a JSON file, tokens in your login Keychain) — under `~/Library/Application Support/Claude Shell/`. The conversations themselves always live in `~/.claude`, and nothing leaves your machine that the CLI wouldn't send anyway.
+## Accounts
 
-So you get a real native window — a Dock icon, ⌘N, a proper text field — without handing anything a wider view of your files or your data than the command line already has. Same trust boundary, nicer surface.
+**Selecting an account changes Claudex Shell only.** The account menu separates selection from explicit external actions:
 
-## What it does
+- **Push to terminal** applies the selected Claude/GLM configuration or Codex login to the corresponding local CLI.
+- **Push to Codex App** applies a saved Codex login to the shared local Codex authentication store. Codex CLI also uses that store; an already-running desktop client may need to be reopened by the user.
+- **Save local login states** imports local Claude, GLM/API-provider, and Codex credentials. Secrets are kept in the login Keychain or private CLI runtime files, not in account-list metadata.
+- Explicit pushes save a recoverable previous state. Claudex Shell never restarts the user's terminal or Codex desktop client.
 
-- **Follows your terminal, live.** A session running in a terminal shows a green dot; open it and Claude Shell tails the session file, so every step the other side takes appears here in real time.
-- **Talks back into the terminal.** Type into a live terminal session and your message is delivered to it over Claude Code's own cross-session messaging — the terminal answers, and the answer syncs back here.
-- **Shows what the terminal shows.** recap summaries, messages from your other sessions, queued input, context-compaction notes, and the effort level on the thinking line.
-- **Drop files and photos, paste screenshots.** Drag files, photos or whole folders onto the window (or click the "+" in the composer, or ⌘V a screenshot) and they attach to the message you're writing. Images reach Claude as image blocks (HEIC and friends are converted to JPEG and downscaled to the API limit); files and folders are referenced the way Claude Code itself does it, as `@path` — text files and folder listings get attached automatically, PDFs and the like Claude reads on its own. Images pasted in the terminal show up here as thumbnails too.
-- **Explicit model & effort.** The pills and the toolbar always show the value actually in effect (`Opus 5 (1M) · xhigh`), including `ultracode` — nothing hidden behind "follow settings".
-- **One process per conversation**, kept warm and resumed with `--resume` after it goes idle.
-- **Several accounts, one click to switch.** Add a second Claude account once (the CLI's own `claude auth login`, in the browser); after that, pick an account at the bottom of the sidebar or press ⌃1…⌃9. The switch writes the saved login back into Claude Code's own Keychain entry, so the terminal follows too — sessions already running switch on their very next request, no restart, no browser, no re-login.
+The app retains its existing bundle identifier and legacy `~/Library/Application Support/Claude Shell/` metadata paths so upgrading the display name does not discard saved accounts, titles, or settings. See [accounts.md](docs/accounts.md) for storage and compatibility details.
 
-## Run it
+## Build and install
 
+Requires macOS 15+, Xcode, XcodeGen, and the CLI for each engine you use. No third-party Swift dependencies.
+
+```sh
+./scripts/build.sh             # Debug build, no launch
+./scripts/build.sh Release
+./scripts/test.sh              # Isolated regression fixtures, no live account changes
+./scripts/install.sh           # Install /Applications/Claudex Shell.app, no launch or Dock changes
 ```
-./scripts/build.sh            # Debug build into DerivedData/
-./scripts/install.sh          # Release build → /Applications → add to Dock
-./scripts/shot.sh out.png     # screenshot the running window
-```
 
-Shortcuts: ⌘N new · ⇧⌘N new-in-folder · ⏎ send · ⇧⏎ newline · ⌘. stop · ⌘R refresh · ⌃1…⌃9 switch account.
+If the destination app is running, installation stops and preserves it. The old `Claude Shell.app` is left intact during the rename.
 
-## Under the hood
-
-- Swift 6 + SwiftUI + AppKit, project generated by XcodeGen, no third-party Swift dependencies.
-- Prose is rendered in a `WKWebView` with marked + highlight.js bundled offline.
-- Not sandboxed (it spawns a child process and reads `~/.claude`), signed to run locally.
-- The cross-session delivery, the stream-json protocol, account switching, and the design system are written up in `docs/` and `DESIGN.md`.
+Shortcuts: ⌘N new conversation · ⇧⌘N choose a folder · ⏎ send · ⇧⏎ newline · ⌘. stop · ⌘R refresh · ⌃1…⌃9 select Claude account.
 
 ## Layout
 
+```text
+App/Sources/Engine/   Claude stream-JSON, Codex app-server, local credentials
+App/Sources/Model/    accounts, sessions, conversation state, attachments
+App/Sources/UI/       SwiftUI sidebar, composer, approvals, account controls
+App/Resources/web/   offline Markdown transcript renderer
+docs/                protocol and account semantics
 ```
-App/Sources/Engine/   child process, stream-json → events, cross-session delivery
-App/Sources/Model/    one conversation, the session list, the transcript model
-App/Sources/UI/       sidebar, thread view, composer, permission card, theme
-App/Resources/web/    transcript.html / .css / .js — the conversation prose
-docs/ · DESIGN.md · PRODUCT.md   protocol notes, design system, product record
-```
-
-Requires macOS 15+ and a working Claude Code install (`~/.local/bin/claude`).

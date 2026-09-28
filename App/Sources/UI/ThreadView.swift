@@ -16,7 +16,7 @@ struct ThreadView: View {
                 EmptyThreadView(controller: controller, dropTargeted: dropTargeted)
             } else {
                 VStack(spacing: 0) {
-                    TranscriptWebView(controller: controller)
+                    TranscriptWebView(controller: controller, onDropTargeted: { dropTargeted = $0 })
                     VStack(spacing: 10) {
                         ForEach(controller.pendingPermissions) { request in
                             PermissionCard(request: request, controller: controller)
@@ -26,7 +26,7 @@ struct ThreadView: View {
                     .frame(maxWidth: Theme.columnWidth)
                     .padding(.horizontal, 24)
                     .padding(.top, 6)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 18)
                     // 正文列（transcript.css #root）和这张卡都是 780 宽、外加 24 边距，两者严格同轴。
                 }
             }
@@ -38,8 +38,14 @@ struct ThreadView: View {
         .onDrop(of: DropHandler.types, isTargeted: $dropTargeted) { providers in
             DropHandler.handle(providers, controller: controller)
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let handoff = controller.handoff { HandoffSourceBar(handoff: handoff) }
+        }
         .task { controller.loadHistoryIfNeeded() }
         .toolbar {
+            if controller.engine == .codex && !controller.isDraft {
+                ToolbarItem(placement: .primaryAction) { ClaudeTakeoverButton(threadId: controller.id) }
+            }
             // macOS 26 会给工具栏项套一层玻璃胶囊，这行只是一行小字，不要那层壳（One Shadow Rule）。
             if #available(macOS 26.0, *) {
                 ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
@@ -60,7 +66,9 @@ private struct StatusBadge: View {
     var body: some View {
         let e = controller.effective(defaults: store.terminalDefaults)
         HStack(spacing: 0) {
+            Text(controller.engine.displayName)
             if let name = e.modelName {
+                Text(" · ")
                 Text(name)
                     .help("模型：\(e.modelId ?? name)（\(e.modelPinned ? "本对话指定" : "跟随终端设置")）")
             }
@@ -81,45 +89,109 @@ private struct StatusBadge: View {
     }
 }
 
-/// 新对话的首屏：和 Codex 一样，问候语 + 居中的输入卡。
+/// A quiet, centered start surface with the same working composer as an active thread.
 struct EmptyThreadView: View {
     let controller: ConversationController
     var dropTargeted = false
     @Environment(ThreadStore.self) private var store
+    @Environment(AccountStore.self) private var accounts
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            VStack(spacing: 22) {
-                VStack(spacing: 6) {
-                    Text(greeting)
-                        .font(.system(size: 26, weight: .medium))
-                        .foregroundStyle(Theme.textPrimary)
-                    Text("在 \(ThreadStore.displayPath(for: controller.cwd)) 里开始，和终端里的 Claude Code 是同一个")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.textSecondary)
-                }
+            Spacer(minLength: 30)
+            VStack(spacing: 28) {
+                Text(controller.handoff == nil ? "今天想做些什么？" : "继续这段对话")
+                    .font(.system(size: 28, weight: .medium))
+                    .tracking(-0.6)
+                    .foregroundStyle(Theme.textPrimary)
                 ComposerView(controller: controller, dropTargeted: dropTargeted)
-                    .frame(maxWidth: 680)
-                if store.claudeMissing {
-                    Label("没找到 claude 命令，发送会失败。请先在终端里装好 Claude Code。", systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.warn)
+                    .frame(maxWidth: 720)
+                VStack(spacing: 8) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "person.crop.circle").font(.system(size: 11))
+                        Text(accountLabel).lineLimit(1).truncationMode(.middle)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+                    Text(controller.handoff?.isPending == true ? "发送后，Claude 会先读取原对话上下文。原 Codex 对话保留。" : "在左下角切换账号，或推送至终端 / Codex App。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textSecondary)
+                    if controller.engine == .codex && store.codexMissing {
+                        Label("未找到 Codex。请先在终端安装 codex，再刷新对话列表。", systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.warn)
+                    }
+                    if controller.engine == .claude && store.claudeMissing {
+                        Label("未找到 Claude Code。请先在终端安装 claude，再刷新对话列表。", systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.warn)
+                    }
                 }
             }
-            .padding(.horizontal, 24)
-            Spacer(minLength: 0)
+            .padding(.horizontal, 32)
+            Spacer(minLength: 30)
             Spacer(minLength: 0)
         }
     }
 
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: Date())
-        switch hour {
-        case 5..<11: return "早上好"
-        case 11..<14: return "中午好"
-        case 14..<18: return "下午好"
-        default: return "晚上好"
+    private var accountLabel: String {
+        if controller.engine == .codex {
+            return accounts.activeCodex.map { "Codex · \($0.email) · 仅此 App" } ?? "Codex · 从左下角保存本机登录态"
         }
+        if let provider = accounts.activeProvider { return "\(provider.name) · 仅此 App" }
+        return accounts.active.map { "Claude · \($0.email) · 仅此 App" } ?? "Claude · 从左下角添加账号"
+    }
+}
+
+/// The original native session remains accessible after creating the Claude continuation.
+struct HandoffSourceBar: View {
+    let handoff: ConversationHandoff
+    @Environment(ThreadStore.self) private var store
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textSecondary)
+            Text("接管自 \(handoff.sourceEngine.displayName) · \(handoff.sourceTitle)")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 12)
+            Button("查看原对话") { store.selectedId = handoff.sourceThreadId }
+                .font(.system(size: 12, weight: .medium))
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.textPrimary)
+                .disabled(store.summary(for: handoff.sourceThreadId) == nil)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .background(Theme.cardFill)
+        .help(handoff.isPending ? "发送下一条消息时，Claude 将读取 \(handoff.messageCount) 条历史消息的上下文；原 Codex 对话保留。" : "已从 \(handoff.messageCount) 条历史消息继续，使用独立的 Claude 原生会话；原 Codex 对话保留。")
+    }
+}
+
+struct ClaudeTakeoverButton: View {
+    let threadId: String
+    @Environment(ThreadStore.self) private var store
+
+    private var unavailable: Bool {
+        store.takingOverId != nil || store.controllers[threadId]?.showsActivity == true
+            || store.controllers[threadId]?.isLoadingHistory == true
+    }
+
+    var body: some View {
+        Button { Task { await store.takeoverWithClaude(threadId) } } label: {
+            HStack(spacing: 5) {
+                if store.takingOverId == threadId { ProgressView().controlSize(.mini) }
+                else { Image(systemName: "arrow.triangle.branch").font(.system(size: 11)) }
+                Text(store.takingOverId == threadId ? "正在准备接管…" : "用 Claude 接管")
+                    .font(.system(size: 12, weight: .medium))
+            }
+        }
+        .disabled(unavailable)
+        .help("将这段 Codex 对话的上下文带入新的 Claude 会话，原对话保留。运行中的对话需先停止。")
     }
 }

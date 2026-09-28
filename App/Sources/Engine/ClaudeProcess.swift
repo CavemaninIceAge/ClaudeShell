@@ -8,9 +8,10 @@ struct LaunchConfig: Sendable {
     var model: String?
     var permissionMode: String
     var effort: String?
+    var environment: [String: String]? = nil
 
     var arguments: [String] {
-        var a = ["-p",
+        var a = ["-p", "--no-chrome",
                  "--input-format", "stream-json",
                  "--output-format", "stream-json",
                  "--verbose",
@@ -44,6 +45,7 @@ final class ClaudeProcess: @unchecked Sendable {
     private let lock = NSLock()
     private var stdoutBuffer = Data()
     private var stderrTail: [String] = []
+    private var launchAuthURL: URL?
 
     init(config: LaunchConfig) {
         self.config = config
@@ -56,9 +58,13 @@ final class ClaudeProcess: @unchecked Sendable {
 
     func start() throws {
         process.executableURL = URL(fileURLWithPath: config.executable)
-        process.arguments = config.arguments
+        process.arguments = try ClaudeAuthOverrides.launchArguments(config)
+        if config.environment != nil, let arguments = process.arguments,
+           let index = arguments.firstIndex(of: "--settings"), index + 1 < arguments.count {
+            launchAuthURL = URL(fileURLWithPath: arguments[index + 1])
+        }
         process.currentDirectoryURL = URL(fileURLWithPath: config.cwd)
-        process.environment = ShellEnvironment.environment()
+        process.environment = config.environment ?? ShellEnvironment.environment()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -79,6 +85,7 @@ final class ClaudeProcess: @unchecked Sendable {
         }
         process.terminationHandler = { [weak self] proc in
             guard let self else { return }
+            if let url = self.launchAuthURL { try? FileManager.default.removeItem(at: url) }
             self.stdoutPipe.fileHandleForReading.readabilityHandler = nil
             self.stderrPipe.fileHandleForReading.readabilityHandler = nil
             let rest = self.stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -87,7 +94,11 @@ final class ClaudeProcess: @unchecked Sendable {
             self.continuation.yield(.exited(code: proc.terminationStatus))
             self.continuation.finish()
         }
-        try process.run()
+        do { try process.run() }
+        catch {
+            if let url = launchAuthURL { try? FileManager.default.removeItem(at: url) }
+            throw error
+        }
     }
 
     private func consumeStdout(_ data: Data) {
@@ -125,21 +136,25 @@ final class ClaudeProcess: @unchecked Sendable {
         return stderrTail.joined()
     }
 
-    private func writeLine(_ json: JSONValue) {
-        guard process.isRunning else { return }
+    @discardableResult
+    private func writeLine(_ json: JSONValue) -> Bool {
+        guard process.isRunning else { return false }
         var data = Data(json.serialized().utf8)
         data.append(0x0A)
         lock.lock(); defer { lock.unlock() }
         do {
             try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            return true
         } catch {
             continuation.yield(.stderr("写入 stdin 失败：\(error.localizedDescription)\n"))
+            return false
         }
     }
 
     /// images：`{"type":"image","source":{"type":"base64",…}}` 块，跟在文本块后面（2026-09-19 实测 CLI 认）。
-    func sendUser(text: String, images: [JSONValue] = []) {
-        writeLine(.object([
+    @discardableResult
+    func sendUser(text: String, images: [JSONValue] = []) -> Bool {
+        return writeLine(.object([
             "type": .string("user"),
             "message": .object([
                 "role": .string("user"),

@@ -6,82 +6,47 @@
 
 ios
 
-（说明：Apple 原生平台，实际是 macOS 15+ 的 SwiftUI app，只出 Mac 版。结构与交互以 macOS HIG 为准：原生侧栏 + 内容区、统一工具栏、菜单栏与快捷键。ios.md 的规则按 macOS 映射使用。）
+Apple 原生平台；实际交付是 macOS 15+ 的 SwiftUI / AppKit 应用，遵循 macOS 窗口、菜单和快捷键习惯。
 
 ## Stack
 
-用户指定"用 mac 原生的工具"：Swift 6 + SwiftUI + AppKit，工程由 XcodeGen 生成，无第三方 Swift 依赖。对话正文用 WKWebView 渲染 Markdown（marked + highlight.js 随包内置，不联网），侧栏、工具栏、输入框、审批卡都是原生 SwiftUI。不用 App Sandbox：app 要启动 `claude` 子进程并读 `~/.claude/projects`。
+Swift 6、SwiftUI、AppKit、XcodeGen，无第三方 Swift 依赖。Markdown 正文使用离线 WKWebView。Claude 使用 stream-JSON；Codex 使用本机 app-server JSON-RPC stdio。应用需要启动 CLI 和读取本机会话，未使用 App Sandbox。
 
 ## Users
 
-一位量化公司创始人（也是本机唯一用户），整天在 Mac 上用 Claude Code 干活。他在终端里已经用得很熟，缺的只是一个更好读 Markdown 的外壳：终端里长回答的表格、代码块、层级看着累。使用场景：Dock 里点一下，立刻出现一个像 Codex 桌面版一样的新对话页面，输入需求，看着 Claude 思考、调工具、回答；随时切到左侧另一个对话继续。
+熟悉 Claude Code 与 Codex 的 Mac 用户，希望在同一个清晰的工作台查看和继续本机对话，保存多种账号，并明确决定何时影响终端或桌面端。
 
 ## Product Purpose
 
-给 Claude Code 套一个 Codex 风格的桌面壳。底下跑的就是本机的 `claude` CLI（`-p --input-format stream-json --output-format stream-json`），所以模型、权限模式、CLAUDE.md、记忆、技能、MCP、hooks 都与终端一致；上面多的只是可读的排版和一个对话列表。成功的样子：用户从此更愿意在这个壳里读 Claude 的回答，而不是回终端。
+Claudex Shell 是 Claude Code + Codex 的原生工作台。成功标准：两种引擎可新建、恢复、流式对话；Claude / GLM / Codex 登录态可保存；应用内切换与向外推送有明确边界。
 
 ## Positioning
 
-- 不是另一个 AI 客户端，而是**终端会话本身的窗口**：左侧列出 `~/.claude/projects` 里所有会话（终端里开的也在），任何一个都能在这里续聊，反过来终端里 `claude --resume` 也能接着聊。
-- 比 Claude 桌面 app 少：没有账户页、没有 Cowork、没有 Chrome 集成入口。只有对话列表、对话、输入框。
-- 思考过程（thinking）、工具调用、权限审批都与终端同一套，只是渲染成折叠区块和审批卡，而不是文字流。
+- 以 Codex 桌面工作台为视觉与操作参照，保留原生窗口、紧凑项目侧栏、正文单列、折叠工具与输入框。
+- 新对话选择引擎，已有对话固定引擎；引擎与账号是两个独立选择。
+- 账号选择默认只影响本应用。推送至终端、推送至 Codex App 是单独操作。
+- Codex CLI 与桌面端共用本机登录缓存，推送明确说明这一点和重启生效的可能性。
 
 ## Operating Context
 
-- Claude Code 2.1.x 已安装在 `~/.local/bin/claude`；用户默认权限模式是 `auto`（见 `~/.claude/settings.json` 的 autoMode），默认模型跟随 settings.json。
-- 会话文件：`~/.claude/projects/<按规则编码的 cwd>/<sessionId>.jsonl`；标题来源依次是 custom-title → ai-title → 首条用户消息。正在终端里跑的会话记在 `~/.claude/sessions/<pid>.json`。
-- 协议要点（2026-09-13 实测）：`--permission-prompt-tool stdio` 才会把权限请求以 `control_request/can_use_tool` 发到 stdout，宿主回 `control_response`；`control_request/interrupt` 可打断；进程在多轮之间保持存活；`--resume <id>` 续接、`--session-id <uuid>` 指定新会话 id。
-- 用户会同时开着终端里的 Claude Code 和这个 app。
-- 登录态位置（2.1.273 实测）：钥匙串 `Claude Code-credentials`（账户名 `$USER`）+ `~/.claude.json` 的 `oauthAccount`；
-  设了 `CLAUDE_CONFIG_DIR` 时条目名加 `-<sha256(目录)[0..<8]>` 后缀、`.claude.json` 搬进该目录。`claude auth login` 固定走
-  「浏览器登录 → 贴授权码」流程，有无 TTY 都一样。
+- 本机 `claude` 和 `codex` CLI 通过登录 PATH 发现，不强制重装。
+- 读取原来的 Claude 会话和本机 Codex rollout；原生会话目录共享，恢复直接交给原引擎，不复制或改写原始会话。
+- 保留旧 bundle ID `com.skywalker.claudeshell` 与 `~/Library/Application Support/Claude Shell/` 元数据，改名不清空原数据。
+- GLM 作为兼容 Anthropic 协议的提供方，通过 Claude 引擎运行。
 
 ## Capabilities and Constraints
 
-- 每个对话对应一个 `claude` 子进程，切换对话不杀进程；空闲 20 分钟后回收，下次发送用 `--resume` 拉起。
-- 终端里正在跑的会话不起进程：旁观（tail 会话文件同步显示）+ 投递（在这里输入的话经跨会话消息协议送进终端，那边回答）。
-  用户 2026-09-13 明确要求"套壳里发消息要同步到终端里、对话同步"，不接受"那边结束后才能续聊"。
-- 每对话可选：模型（跟随设置 / fable / opus / opus[1m] / sonnet / sonnet[1m] / haiku）、权限模式（auto / acceptEdits / manual / plan / bypassPermissions）、强度（默认 / low / medium / high / xhigh / max / ultracode）。改动在下一轮生效。
-- 模型和强度必须明着显示（用户 2026-09-13 要求"像终端一样 explicit"）：胶囊与工具栏写具体生效值，不写"跟随设置"这种黑盒字样；来源放悬停提示。
-- 新对话默认工作目录是家目录（和用户平时在终端启动的位置一致），可在发送第一条消息前换目录；会话开始后目录不可改（这是 Claude Code 的规则）。
-- 多账号（2026-09-16 用户要求「选择登录不同的账号，都保留登录态，在终端里切账号不需要通过浏览器重新登录」）：
-  每个账号的登录态存成快照（钥匙串 `Claude Shell-account-<id>` + `accounts.json` 里的身份），切换 = 写回 Claude Code
-  自己的钥匙串条目和 `~/.claude.json` 的 `oauthAccount`；终端里已经开着的会话下一次请求就用新账号（2026-09-16 实测 0.2 秒，
-  `-p` 与交互式都验过），不用重开也不用重登。添加账号走 CLI 自己的
-  `claude auth login`（临时 `CLAUDE_CONFIG_DIR`，不碰当前登录态；浏览器登录后贴授权码）。终端里 `/login` 换的账号自动收录。
-  入口：侧栏底部账号行（Codex 左下角那一行）+ 菜单栏「账号」+ ⌃1…⌃9。只支持 claude.ai 订阅账号。细节见 `docs/accounts.md`。
-- 附件（2026-09-19 用户发火「仍然不支持拖入文件/照片」）：文件 / 照片 / 目录可以拖到窗口任何位置、⌘V 粘贴（Finder 里复制的文件、
-  截图）、或点输入框左下角「+」选；挂在输入卡顶上的附件条里（图片方缩略图、文件片带扩展名），随下一条消息发出。
-  图片走 stream-json 的 `image` 块（HEIC/TIFF 等转 JPEG、长边 ≤ 2000、单张 ≤ 3.5 MB），正文里留一行终端同款的
-  `[Image #N] 路径`；文件 / 目录写成 `@"路径"`，CLI 自己会把文本文件和目录列表附上，PDF / 二进制它不附、Claude 用 Read 读。
-  正文里用户消息上显示缩略图和文件片（点开用 Finder 默认程序）；终端里粘贴的图片回放时同样显示缩略图。
-  终端里开着的会话只能投文字，图片也按路径引用；剪贴板贴的图片这种情况下先落到 `~/Library/Caches/Claude Shell/pasted/`。
-  细节与实测见 `docs/protocol.md`「附件」一节。
-- 不做：多窗口拖拽 diff 面板、文件树、快捷指令面板、语音。
-- UI 文案中文；日期不在当年的要带年份。
-- README 多语言：`README.md`（英文，GitHub 默认）+ `README.zh-Hans/zh-Hant/fr/ja/es/de.md`，顶部一行语言导航。改一处口径要各语言同步。定位口径：一个「壳」，只跑本机 `claude`、只读 `~/.claude`，不比命令行多拿任何文件/数据权限（隐私最小面）。
-- 未决：是否要把终端里的 `/` 斜杠命令做进输入框（`-p` 模式下大部分斜杠命令不可用，先不做）。
+- 保留 Claude Markdown、附件、工具流、审批、停止、终端会话旁观与消息投递。
+- 外部终端会话始终由终端自身的账号执行，应用内选择不会替它换号，界面明确提示。
+- Codex 接入基于安装版本支持的官方 app-server；本地历史包含用户可访问的 rollout 文件，不承诺云端 ChatGPT 历史同步。
+- 保存登录态使用 Keychain；CLI 必需的私有运行文件使用 0700 目录和 0600 文件。清单不保存令牌。
+- 向共享登录态推送前备份，写入失败尝试恢复；用户之后改过的配置不能被撤回操作盲目覆盖。
+- Codex 会话可通过「用 Claude 接管」生成一个带来源链接的新 Claude Code 原生会话；完整可见正文和工具摘要作为私有上下文附件交给 Claude，原会话保留。
+- 不通过重启其他应用实现账号推送。
 
-## Brand Commitments
+## Development and Verification
 
-- 名字 **Claude Shell**，bundle id `com.skywalker.claudeshell`，仓库 `~/Developer/ClaudeShell`。
-- 视觉：用户钦定"设计风格完全参考 Codex（OpenAI Codex 桌面版）"。这是一条绑定约束：左侧对话列表按项目分组、右侧居中的单列对话、底部圆角大输入框、无气泡的助手正文、灰色圆角的用户消息、折叠的"思考"与工具步骤。不加任何 Codex 没有的装饰。
-- 图标：深色圆角方块上一枚陶土橙（Claude 的橙）的 `›_` 提示符，不用 Anthropic 的商标。
-
-## Evidence on Hand
-
-- 协议探针与实测输出：见 `docs/protocol.md`（从 scratchpad 的 probe 结果整理）。
-- 用户本机没有安装 Codex 桌面版，只有 codex CLI 0.153.4；Codex 的版式依据是公开的桌面版界面记忆，没有像素级参考图。
-- 没有 Codex 的字体、配色文件；一律用系统字体（SF Pro / PingFang SC）和系统语义色。
-
-## Product Principles
-
-1. 和终端完全同一个 Claude Code：不在壳里另做一套权限、记忆或提示词。
-2. 壳只做三件事：列会话、渲染对话、收输入。功能上有疑问时选"不做"。
-3. 会话文件是唯一真相：标题、历史、目录都从 `~/.claude` 读，app 自己只存标题改名和每对话设置。
-4. 任何时候都能回终端：会话 id 可复制，`claude --resume` 就能接上。
-5. 界面的每一处都以"熟悉 Codex 的人一眼认得"为准，不为了个性偏离。
-
-## Accessibility & Inclusion
-
-系统字体、系统语义色，随系统浅色/深色；正文与占位文字对比度 ≥ 4.5:1；全部操作可键盘完成（⌘N 新对话、⏎ 发送、⇧⏎ 换行、⌘. 停止）。
+- 用户始终保有屏幕与输入控制。构建、fixture 测试和离屏渲染在后台进行。
+- 不启动可见窗口，不切换系统外观，不重启 Dock，不发送全局键鼠输入。
+- 不使用 Chrome、Superpowers 或 Teacher。
+- 测试使用临时目录、假凭据和模拟 app-server；不会真实推送本机账号，也不会发送付费模型请求。

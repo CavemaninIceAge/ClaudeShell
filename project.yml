@@ -1,4 +1,4 @@
-name: ClaudeShell
+name: ClaudexShell
 options:
   bundleIdPrefix: com.skywalker
   deploymentTarget:
@@ -15,10 +15,10 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: NO
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2"
 targets:
-  ClaudeShell:
+  ClaudexShell:
     type: application
     platform: macOS
     sources:
@@ -30,7 +30,7 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_NAME: "Claude Shell"
+        PRODUCT_NAME: "Claudex Shell"
         PRODUCT_BUNDLE_IDENTIFIER: com.skywalker.claudeshell
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_EMIT_LOC_STRINGS: YES
@@ -38,8 +38,10 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDevelopmentRegion: zh-Hans
-        CFBundleDisplayName: Claude Shell
-        CFBundleName: Claude Shell
+        CFBundleDisplayName: Claudex Shell
+        CFBundleName: Claudex Shell
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "2"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026"
         NSHighResolutionCapable: true

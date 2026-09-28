@@ -5,6 +5,19 @@ struct ThreadSettings: Sendable, Codable, Equatable {
     var model: String? = nil            // nil = 跟随 ~/.claude/settings.json
     var permissionMode: String = "auto" // 和用户终端里一样
     var effort: String? = nil
+    var engine: ConversationEngine = .claude
+
+    enum CodingKeys: String, CodingKey { case model, permissionMode, effort, engine }
+    init(model: String? = nil, permissionMode: String = "auto", effort: String? = nil, engine: ConversationEngine = .claude) {
+        self.model = model; self.permissionMode = permissionMode; self.effort = effort; self.engine = engine
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        model = try c.decodeIfPresent(String.self, forKey: .model)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode) ?? "auto"
+        effort = try c.decodeIfPresent(String.self, forKey: .effort)
+        engine = try c.decodeIfPresent(ConversationEngine.self, forKey: .engine) ?? .claude
+    }
 }
 
 enum ShellError: LocalizedError {
@@ -19,9 +32,15 @@ enum ShellError: LocalizedError {
 /// 一个对话：持有 transcript、对应的 claude 子进程，处理发送 / 打断 / 审批。
 @MainActor
 @Observable
-final class ConversationController: Identifiable {
-    let id: String
+final class ConversationController: @preconcurrency Identifiable {
+    private(set) var id: String
     let cwd: String
+    var engine: ConversationEngine { settings.engine }
+    private(set) var codexModels: [CodexModelOption] = []
+    private(set) var sessionPath: String?
+    var onSessionStarted: (@MainActor (ConversationController, String) -> Void)?
+    private(set) var handoff: ConversationHandoff?
+    var onHandoffConsumed: (@MainActor (ConversationController, ConversationHandoff) -> Void)?
 
     private(set) var items: [TranscriptItem] = []
     private(set) var isWorking = false
@@ -51,6 +70,14 @@ final class ConversationController: Identifiable {
     // 流式期间的改动先落在 working 里，每 60ms 才发布到 items，免得每个 token 都触发一次视图更新。
     @ObservationIgnored private var working: [TranscriptItem] = []
     @ObservationIgnored private var process: ClaudeProcess?
+    @ObservationIgnored private var codexProcess: CodexProcess?
+    @ObservationIgnored private var sendTask: Task<Void, Never>?
+    @ObservationIgnored private var codexResumeState = CodexResumeState(existingHistory: false)
+    @ObservationIgnored private var codexThreadId: String?
+    @ObservationIgnored private var codexTurnId: String?
+    @ObservationIgnored private var codexRequests: [String: (id: JSONValue, method: String, params: JSONValue)] = [:]
+    @ObservationIgnored private var stopRequested = false
+    @ObservationIgnored private var sendGeneration = UUID()
     @ObservationIgnored private var pumpTask: Task<Void, Never>?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private var idleTask: Task<Void, Never>?
@@ -61,8 +88,12 @@ final class ConversationController: Identifiable {
     @ObservationIgnored private var reader: SessionReader?
     @ObservationIgnored private var tailTask: Task<Void, Never>?
 
-    init(id: String, cwd: String, settings: ThreadSettings, hasSessionFile: Bool) {
+    init(id: String, cwd: String, settings: ThreadSettings, hasSessionFile: Bool, sessionPath: String? = nil, handoff: ConversationHandoff? = nil) {
         self.id = id
+        self.sessionPath = sessionPath
+        self.handoff = handoff
+        self.codexThreadId = hasSessionFile && settings.engine == .codex ? CodexHistory.sessionId(id) : nil
+        self.codexResumeState = CodexResumeState(existingHistory: hasSessionFile && settings.engine == .codex)
         self.cwd = cwd
         self.settings = settings
         self.hasSessionFile = hasSessionFile
@@ -81,7 +112,25 @@ final class ConversationController: Identifiable {
     func loadHistoryIfNeeded() {
         guard hasSessionFile, !historyLoaded, !isLoadingHistory else { return }
         isLoadingHistory = true
-        let url = SessionIndex.sessionFileURL(id: id, cwd: cwd)
+        let url = sessionPath.map { URL(fileURLWithPath: $0) } ?? SessionIndex.sessionFileURL(id: id, cwd: cwd)
+        if engine == .codex {
+            Task { [weak self] in
+                do {
+                    let result = try await Task.detached(priority: .userInitiated) { try CodexHistory.load(url: url) }.value
+                    guard let self else { return }
+                    self.working = result.items + self.working
+                    self.fileModel = result.model
+                    self.historyLoaded = true
+                    self.isLoadingHistory = false
+                    self.publish()
+                } catch {
+                    self?.isLoadingHistory = false
+                    self?.working.append(.note("无法读取 Codex 历史：\(error.localizedDescription)", level: "error"))
+                    self?.publish()
+                }
+            }
+            return
+        }
         Task.detached(priority: .userInitiated) { [weak self] in
             var r = SessionReader(url: url)
             r.readMore()
@@ -106,7 +155,7 @@ final class ConversationController: Identifiable {
 
     /// 由 ThreadStore 按登记表刷新调用。
     func setTerminalStatus(_ status: String?) {
-        guard status != terminalStatus else { return }
+        guard engine == .claude, status != terminalStatus else { return }
         terminalStatus = status
         if status != nil {
             startTailing()
@@ -228,25 +277,60 @@ final class ConversationController: Identifiable {
         statusText = "正在思考…" + thinkingEffortSuffix
         idleTask?.cancel()
         publish()
-        do {
-            try ensureProcess()
-        } catch {
-            fail(error.localizedDescription)
-            return
+        stopRequested = false
+        let generation = UUID()
+        sendGeneration = generation
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                if self.engine == .codex {
+                    try await self.sendCodex(outgoing)
+                } else {
+                    try await self.ensureProcess()
+                    guard !Task.isCancelled, !self.stopRequested else { self.finishStopped(); return }
+                    let nativeText = try self.handoffMessage(outgoing.wireText)
+                    guard self.process?.sendUser(text: nativeText, images: outgoing.imageBlocks) == true else {
+                        throw HandoffFailure(message: "Claude Code 消息发送失败，请重新发送。")
+                    }
+                    self.consumeHandoff()
+                    self.hasSessionFile = true
+                }
+                if isFirst { self.onFirstMessage?(self, outgoing.titleText) }
+            } catch is CancellationError {
+                guard self.sendGeneration == generation else { return }
+                self.finishStopped()
+            } catch {
+                guard self.sendGeneration == generation else { return }
+                if self.engine == .codex { self.codexProcess?.terminate(); self.codexProcess = nil }
+                self.fail(error.localizedDescription)
+            }
+            if self.sendGeneration == generation { self.sendTask = nil }
         }
-        process?.sendUser(text: outgoing.wireText, images: outgoing.imageBlocks)
-        hasSessionFile = true
-        if isFirst { onFirstMessage?(self, outgoing.titleText) }
     }
 
     func stop() {
-        guard isWorking, let process else { return }
+        guard isWorking else { return }
         statusText = "正在停止…"
-        process.interrupt()
+        stopRequested = true
+        if engine == .codex {
+            if let p = codexProcess, let thread = codexThreadId, let turn = codexTurnId {
+                Task { [weak self] in
+                    do { _ = try await p.request("turn/interrupt", params: .object(["threadId": .string(thread), "turnId": .string(turn)])) }
+                    catch { self?.fail(error.localizedDescription) }
+                }
+            } else {
+                codexProcess?.terminate()
+                codexProcess = nil
+                sendTask?.cancel()
+                finishStopped()
+            }
+        } else if let process { process.interrupt() }
+        else { sendTask?.cancel(); finishStopped() }
     }
 
     func respond(to request: PermissionRequest, allow: Bool, always: Bool = false) {
         pendingPermissions.removeAll { $0.id == request.id }
+        if engine == .codex { respondCodex(request, allow: allow, always: always); return }
         process?.respond(requestId: request.id, allow: allow,
                          updatedInput: request.input,
                          updatedPermissions: always ? request.suggestions : nil,
@@ -257,6 +341,7 @@ final class ConversationController: Identifiable {
     /// AskUserQuestion：把答案塞进 updatedInput.answers 一起放行。
     func answerQuestion(_ request: PermissionRequest, answers: [String: String]) {
         pendingPermissions.removeAll { $0.id == request.id }
+        if engine == .codex { answerCodex(request, answers: answers); return }
         var input = request.input.object ?? [:]
         input["answers"] = .object(answers.mapValues { .string($0) })
         process?.respond(requestId: request.id, allow: true, updatedInput: .object(input), updatedPermissions: nil, message: nil)
@@ -265,6 +350,9 @@ final class ConversationController: Identifiable {
 
     func terminate(immediately: Bool = false) {
         idleTask?.cancel()
+        sendTask?.cancel()
+        codexProcess?.terminate()
+        codexProcess = nil
         pumpTask?.cancel()
         tailTask?.cancel()
         tailTask = nil
@@ -272,18 +360,43 @@ final class ConversationController: Identifiable {
         process = nil
     }
 
+    private func handoffMessage(_ text: String) throws -> String {
+        guard let handoff, handoff.isPending else { return text }
+        if let sessionPath, handoff.appearsInNativeSession(at: sessionPath) {
+            consumeHandoff()
+            return text
+        }
+        guard FileManager.default.isReadableFile(atPath: handoff.contextPath) else {
+            throw HandoffFailure(message: "接管上下文文件不可读。请从源会话重新创建接管。")
+        }
+        return handoff.prompt(continuation: text)
+    }
+
+    private func consumeHandoff() {
+        guard var handoff, handoff.isPending else { return }
+        handoff.isPending = false
+        self.handoff = handoff
+        onHandoffConsumed?(self, handoff)
+    }
+
     // MARK: - 进程
 
-    private func ensureProcess() throws {
+    private func ensureProcess() async throws {
         if let p = process, p.isRunning, !needsRespawn { return }
         if let p = process { p.terminate() }
         pumpTask?.cancel()
         process = nil
         needsRespawn = false
         guard let exe = ShellEnvironment.claudeExecutable() else { throw ShellError.claudeNotFound }
-        let resume = FileManager.default.fileExists(atPath: SessionIndex.sessionFileURL(id: id, cwd: cwd).path)
+        let env = try await AccountStore.shared.prepareClaudeEnvironment()
+        try Task.checkCancellation()
+        // Account isolation shares Claude Code's own project history directory; the CLI owns resume/persistence.
+        let nativeFile = URL(fileURLWithPath: ClaudeAuth.configDir(env: env)).appendingPathComponent("projects")
+            .appendingPathComponent(SessionIndex.encodeProjectPath(cwd)).appendingPathComponent(id + ".jsonl")
+        sessionPath = nativeFile.resolvingSymlinksInPath().path
+        let resume = FileManager.default.fileExists(atPath: nativeFile.path)
         let config = LaunchConfig(executable: exe, cwd: cwd, sessionId: id, resume: resume,
-                                  model: settings.model, permissionMode: settings.permissionMode, effort: settings.effort)
+                                  model: settings.model, permissionMode: settings.permissionMode, effort: settings.effort, environment: env)
         let p = ClaudeProcess(config: config)
         try p.start()
         process = p
@@ -300,8 +413,13 @@ final class ConversationController: Identifiable {
         if isWorking {
             needsRespawn = true
         } else {
+            sessionModel = nil
+            sessionPermissionMode = nil
+            codexModels = []
             process?.terminate()
             process = nil
+            codexProcess?.terminate()
+            codexProcess = nil
         }
     }
 
@@ -313,6 +431,8 @@ final class ConversationController: Identifiable {
         } else {
             process?.terminate()
             process = nil
+            codexProcess?.terminate()
+            codexProcess = nil
         }
     }
 
@@ -326,6 +446,10 @@ final class ConversationController: Identifiable {
     }
 
     func effective(defaults: ClaudeDefaults.Resolved) -> Effective {
+        if engine == .codex {
+            return Effective(modelId: settings.model ?? sessionModel ?? fileModel, modelPinned: settings.model != nil,
+                             effort: settings.effort, effortPinned: settings.effort != nil)
+        }
         // 终端里开着的会话：模型 / 强度由终端决定，app 里的选择不作数；模型看会话文件，强度只能按终端默认猜。
         if isLiveInTerminal {
             return Effective(modelId: fileModel ?? defaults.model, modelPinned: false,
@@ -333,7 +457,7 @@ final class ConversationController: Identifiable {
         }
         let modelPinned = !(settings.model ?? "").isEmpty
         let effortPinned = !(settings.effort ?? "").isEmpty
-        return Effective(modelId: modelPinned ? settings.model : (sessionModel ?? defaults.model),
+        return Effective(modelId: modelPinned ? settings.model : (sessionModel ?? AccountStore.shared.activeProvider?.model ?? defaults.model),
                          modelPinned: modelPinned,
                          effort: effortPinned ? settings.effort : defaults.effort,
                          effortPinned: effortPinned)
@@ -342,6 +466,7 @@ final class ConversationController: Identifiable {
     /// 思考时那个强度名，和终端「thinking with xhigh effort」一致；ultracode 实际强度是 xhigh。
     /// 终端里旁观的会话按它自己文件里的默认强度显示；本 app 的进程按本对话选的（没选就用终端默认）。
     var activeEffortLabel: String {
+        if engine == .codex { return settings.effort ?? "" }
         let raw: String
         if isLiveInTerminal {
             raw = terminalDefaultEffort ?? ""
@@ -362,10 +487,14 @@ final class ConversationController: Identifiable {
             guard let self, !Task.isCancelled, !self.isWorking else { return }
             self.process?.terminate()
             self.process = nil
+            self.codexProcess?.terminate()
+            self.codexProcess = nil
         }
     }
 
     private func fail(_ message: String) {
+        pendingPermissions = []
+        codexRequests = [:]
         closeTurn()
         working.append(.note(message, level: "error"))
         isWorking = false
@@ -554,8 +683,13 @@ final class ConversationController: Identifiable {
         onTurnFinished?(self)
         scheduleIdleKill()
         if needsRespawn {
+            sessionModel = nil
+            sessionPermissionMode = nil
+            codexModels = []
             process?.terminate()
             process = nil
+            codexProcess?.terminate()
+            codexProcess = nil
             needsRespawn = false
         }
     }
@@ -620,5 +754,194 @@ final class ConversationController: Identifiable {
 
     private func publish() {
         items = working
+    }
+}
+
+// MARK: - Codex app-server
+private extension ConversationController {
+    func sendCodex(_ outgoing: OutgoingMessage) async throws {
+        if codexProcess?.isRunning != true || needsRespawn {
+            // thread/start allocates an ID/path but does not persist a rollout until the first turn.
+            // Retry a failed allocation through native thread/start, never manufacture an empty history.
+            if codexThreadId != nil, codexResumeState.shouldStartFresh(at: sessionPath) {
+                codexThreadId = nil
+                sessionPath = nil
+                hasSessionFile = false
+            }
+            codexProcess?.terminate()
+            pumpTask?.cancel()
+            let environment = try await AccountStore.shared.prepareCodexEnvironment()
+            try Task.checkCancellation()
+            let p = CodexProcess()
+            try p.start(cwd: cwd, environment: environment)
+            codexProcess = p
+            needsRespawn = false
+            pumpTask = Task { [weak self] in
+                for await event in p.events {
+                    guard let self, self.codexProcess === p else { break }
+                    self.handleCodex(event, from: p)
+                }
+            }
+            try await p.initialize()
+            try Task.checkCancellation()
+            var parameters: [String: JSONValue] = [
+                "cwd": .string(cwd), "approvalPolicy": .string(codexApprovalPolicy), "approvalsReviewer": .string("user"),
+                "sandbox": .string(settings.permissionMode == "bypassPermissions" ? "danger-full-access" : settings.permissionMode == "plan" ? "read-only" : "workspace-write"),
+            ]
+            if let model = settings.model, !model.isEmpty { parameters["model"] = .string(model) }
+            let response: JSONValue
+            if let thread = codexThreadId {
+                parameters["threadId"] = .string(thread)
+                // Pass the native rollout path to app-server. It owns locking, resume, and persistence;
+                // the shell never creates another same-ID transcript or reconstructs model context.
+                if let sessionPath { parameters["path"] = .string(sessionPath) }
+                response = try await p.request("thread/resume", params: .object(parameters))
+            } else {
+                response = try await p.request("thread/start", params: .object(parameters))
+            }
+            guard let thread = response["thread"]?["id"]?.string else {
+                throw CodexProcess.Failure(message: "Codex 未返回会话编号。")
+            }
+            codexThreadId = thread
+            sessionModel = response["model"]?.string
+            sessionPermissionMode = settings.permissionMode
+            sessionPath = response["thread"]?["path"]?.string ?? sessionPath
+            hasSessionFile = codexResumeState.observePersistence(at: sessionPath) || codexResumeState.established
+            let previousId = id
+            id = CodexHistory.key(thread)
+            if previousId != id { onSessionStarted?(self, previousId) }
+            // Fetch actual available models from this account; no hardcoded model assumptions.
+            if let result = try? await p.request("model/list", params: .object(["includeHidden": .bool(false)]), timeout: .seconds(15)) {
+                codexModels = result["data"]?.array?.compactMap(CodexModelOption.parse) ?? []
+            }
+        }
+        try Task.checkCancellation()
+        guard !stopRequested, let p = codexProcess, let thread = codexThreadId else { throw CancellationError() }
+        var inputs: [JSONValue] = [.object(["type": .string("text"), "text": .string(outgoing.wireText), "text_elements": .array([])])]
+        for image in outgoing.imageBlocks {
+            if let data = image["source"]?["data"]?.string, let mime = image["source"]?["media_type"]?.string {
+                inputs.append(.object(["type": .string("image"), "url": .string("data:\(mime);base64,\(data)")]))
+            }
+        }
+        var params: [String: JSONValue] = ["threadId": .string(thread), "input": .array(inputs), "approvalPolicy": .string(codexApprovalPolicy)]
+        if let model = settings.model, !model.isEmpty { params["model"] = .string(model) }
+        if let effort = settings.effort, !effort.isEmpty { params["effort"] = .string(effort) }
+        let result = try await p.request("turn/start", params: .object(params))
+        hasSessionFile = codexResumeState.observePersistence(at: sessionPath) || codexResumeState.established
+        // Completion notifications may precede this response for very short turns.
+        if isWorking { codexTurnId = result["turn"]?["id"]?.string ?? codexTurnId }
+        if stopRequested, isWorking { stop() }
+    }
+
+    var codexApprovalPolicy: String {
+        if settings.permissionMode == "bypassPermissions" { return "never" }
+        return settings.permissionMode == "manual" || settings.permissionMode == "default" ? "untrusted" : "on-request"
+    }
+
+    func handleCodex(_ event: JSONValue, from p: CodexProcess) {
+        guard let method = event["method"]?.string else { return }
+        let params = event["params"] ?? .object([:])
+        if let thread = params["threadId"]?.string, let active = codexThreadId, thread != active { return }
+        if let turn = params["turnId"]?.string, let active = codexTurnId, turn != active { return }
+        if method == "turn/completed", let turn = params["turn"]?["id"]?.string,
+           let active = codexTurnId, turn != active { return }
+        if let requestId = event["id"] {
+            if let request = CodexEvents.permission(id: requestId, method: method, params: params) {
+                codexRequests[request.id] = (requestId, method, params)
+                pendingPermissions.append(request)
+                statusText = request.toolName == "AskUserQuestion" ? "等待你的回答" : "等待你的批准"
+            } else {
+                p.reject(id: requestId, method: method)
+                working.append(.note("Codex 请求了尚未支持的交互：\(method)。请求已拒绝。", level: "warn"))
+                flushNow()
+            }
+            return
+        }
+        switch method {
+        case "turn/started":
+            codexTurnId = params["turn"]?["id"]?.string
+            openTurnIfNeeded()
+        case "item/started", "item/completed":
+            guard let item = params["item"], var block = CodexEvents.block(item, done: method == "item/completed") else { return }
+            openTurnIfNeeded()
+            if hasBlock(block.id) {
+                mutateBlock(block.id) { old in
+                    if block.text.isEmpty { block.text = old.text }
+                    if block.tool?.result == nil { block.tool?.result = old.tool?.result }
+                    let started = old.tool?.startedAt ?? block.tool?.startedAt
+                    block.tool?.startedAt = started
+                    old = block
+                }
+            } else { mutateTurn { $0.blocks.append(block) } }
+            statusText = block.kind == .tool ? "正在运行 \(block.tool?.name ?? "工具")…" : block.kind == .thinking ? "正在思考…" : "正在回答…"
+            scheduleFlush()
+        case "item/agentMessage/delta", "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/plan/delta":
+            guard let id = params["itemId"]?.string else { return }
+            let delta = params["delta"]?.string ?? ""
+            openTurnIfNeeded()
+            if !hasBlock(id) {
+                mutateTurn { $0.blocks.append(Block(id: id, kind: method.contains("reasoning") ? .thinking : .text)) }
+            }
+            mutateBlock(id) { $0.text += delta }
+            scheduleFlush()
+        case "item/commandExecution/outputDelta", "item/fileChange/outputDelta":
+            guard let id = params["itemId"]?.string else { return }
+            mutateBlock(id) { block in
+                let result = String(((block.tool?.result ?? "") + (params["delta"]?.string ?? "")).suffix(40_000))
+                block.tool?.result = result
+            }
+            scheduleFlush()
+        case "turn/completed":
+            let turn = params["turn"] ?? .object([:])
+            let status = turn["status"]?.string ?? "completed"
+            if status == "completed" || status == "interrupted" { codexResumeState.recordCompletedTurn() }
+            hasSessionFile = codexResumeState.observePersistence(at: sessionPath) || codexResumeState.established
+            if status == "interrupted" { working.append(.note("已停止")) }
+            pendingPermissions = []
+            codexRequests = [:]
+            codexTurnId = nil
+            finishTurn(with: .object(["is_error": .bool(status == "failed"), "stop_reason": .string(status),
+                                      "result": turn["error"]?["message"] ?? .string("")]))
+        case "error":
+            if params["willRetry"]?.bool == true { statusText = "Codex 正在重试…" }
+            else {
+                // A late completion from this failed process must never close a subsequent turn.
+                p.terminate()
+                codexProcess = nil
+                codexTurnId = nil
+                fail(params["error"]?["message"]?.string ?? params["message"]?.string ?? "Codex 请求失败")
+            }
+        case "serverRequest/resolved":
+            if let id = params["requestId"] {
+                let key = "codex-rpc:" + id.serialized()
+                codexRequests[key] = nil
+                pendingPermissions.removeAll { $0.id == key }
+            }
+        case "claudex/exited":
+            codexProcess = nil
+            if isWorking { fail("Codex 进程退出（代码 \(params["code"]?.int ?? -1)）。\n\(p.stderrTail)") }
+        default: break
+        }
+    }
+
+    func respondCodex(_ request: PermissionRequest, allow: Bool, always: Bool) {
+        guard let pending = codexRequests.removeValue(forKey: request.id) else { return }
+        codexProcess?.reply(id: pending.id, result: CodexEvents.approvalResult(method: pending.method, params: pending.params, allow: allow, always: always))
+        statusText = allow ? "正在继续…" : "操作已拒绝，正在继续…"
+    }
+
+    func answerCodex(_ request: PermissionRequest, answers: [String: String]) {
+        guard let pending = codexRequests.removeValue(forKey: request.id) else { return }
+        codexProcess?.reply(id: pending.id, result: CodexEvents.questionResult(params: pending.params, answers: answers))
+        statusText = "正在思考…"
+    }
+
+    func finishStopped() {
+        if isWorking {
+            pendingPermissions = []
+            codexRequests = [:]
+            working.append(.note("已停止"))
+            finishTurn(with: .object(["is_error": .bool(false), "stop_reason": .string("interrupted")]))
+        }
     }
 }

@@ -85,6 +85,45 @@ private struct AttachmentTile: View {
     }
 }
 
+/// 剪贴板 / 拖放里能挂成附件的东西：文件 URL，或没有路径的图片字节（浏览器拖图、截图粘贴）。
+/// 输入框（SubmitTextView）和正文（TranscriptWKWebView）接拖放走的是同一套判断。
+enum PasteboardAttachments {
+    static let imageTypes: [NSPasteboard.PasteboardType] = [.png, .tiff]
+
+    static func fileURLs(on pb: NSPasteboard) -> [URL] {
+        (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    static func imageData(on pb: NSPasteboard) -> Data? {
+        for t in imageTypes { if let d = pb.data(forType: t) { return d } }
+        return nil
+    }
+
+    static func hasAttachable(_ pb: NSPasteboard) -> Bool {
+        !fileURLs(on: pb).isEmpty || imageData(on: pb) != nil
+    }
+
+    /// 取走了就返回 true；否则由调用方按普通文字处理。
+    /// textWins：剪贴板同时有文字和图片（Excel / Numbers 复制单元格会附一张渲染图）时按文字贴。
+    @discardableResult
+    static func take(from pb: NSPasteboard, source: String, textWins: Bool = false,
+                     files: ([URL]) -> Void, image: (Data, String) -> Void) -> Bool {
+        let urls = fileURLs(on: pb)
+        if !urls.isEmpty {
+            TestLog.write("\(source) files: \(urls.map(\.path))")
+            files(urls)
+            return true
+        }
+        if textWins, pb.string(forType: .string) != nil { return false }
+        if let data = imageData(on: pb) {
+            TestLog.write("\(source) image: \(data.count) bytes")
+            image(data, source.hasSuffix("paste") ? "剪贴板图片.png" : "拖入的图片.png")
+            return true
+        }
+        return false
+    }
+}
+
 /// 拖到正文区任何位置都算数：从 NSItemProvider 里取文件 URL 或图片字节，交给控制器。
 enum DropHandler {
     static let types: [UTType] = [.fileURL, .png, .jpeg, .tiff, .image]

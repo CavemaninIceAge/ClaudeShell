@@ -10,15 +10,32 @@ struct SessionRecord: Codable, Sendable, Hashable, Identifiable {
     var path: String
     var fileSize: Int
     var fileModified: Date
+    var engine: ConversationEngine = .claude
+
+    enum CodingKeys: String, CodingKey { case id, cwd, title, createdAt, updatedAt, path, fileSize, fileModified, engine }
+
+    init(id: String, cwd: String, title: String, createdAt: Date, updatedAt: Date, path: String, fileSize: Int, fileModified: Date, engine: ConversationEngine = .claude) {
+        self.id = id; self.cwd = cwd; self.title = title; self.createdAt = createdAt; self.updatedAt = updatedAt
+        self.path = path; self.fileSize = fileSize; self.fileModified = fileModified; self.engine = engine
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); cwd = try c.decode(String.self, forKey: .cwd)
+        title = try c.decode(String.self, forKey: .title); createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt); path = try c.decode(String.self, forKey: .path)
+        fileSize = try c.decode(Int.self, forKey: .fileSize); fileModified = try c.decode(Date.self, forKey: .fileModified)
+        engine = try c.decodeIfPresent(ConversationEngine.self, forKey: .engine) ?? .claude
+    }
 }
 
 enum SessionIndex {
     static var projectsDir: URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/projects", isDirectory: true)
+        URL(fileURLWithPath: ClaudeAuth.configDir(env: ShellEnvironment.environment())).appendingPathComponent("projects", isDirectory: true)
     }
 
     static var sessionsDir: URL {
-        URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claude/sessions", isDirectory: true)
+        URL(fileURLWithPath: ClaudeAuth.configDir(env: ShellEnvironment.environment())).appendingPathComponent("sessions", isDirectory: true)
     }
 
     /// Claude Code 给项目目录命名的规则：路径里每个非字母数字字符换成 `-`（中文每个字一个 `-`）。
@@ -31,10 +48,10 @@ enum SessionIndex {
     }
 
     /// 扫一遍所有项目目录。`previous` 是上次的结果：大小和修改时间没变的文件直接沿用，不重新解析。
-    static func scan(previous: [String: SessionRecord]) -> [String: SessionRecord] {
+    static func scan(previous: [String: SessionRecord], projectsRoot: URL = projectsDir) -> [String: SessionRecord] {
         let fm = FileManager.default
         var result: [String: SessionRecord] = [:]
-        guard let dirs = try? fm.contentsOfDirectory(at: projectsDir, includingPropertiesForKeys: nil) else { return result }
+        guard let dirs = try? fm.contentsOfDirectory(at: projectsRoot, includingPropertiesForKeys: nil) else { return result }
         for dir in dirs {
             let name = dir.lastPathComponent
             // 子代理/工作流的临时项目目录不算会话。

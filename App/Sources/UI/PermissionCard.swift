@@ -66,15 +66,15 @@ struct PermissionCard: View {
 
     private var headline: String {
         switch request.toolName {
-        case "Bash": return "Claude 想运行命令"
-        case "Edit", "MultiEdit", "NotebookEdit": return "Claude 想修改文件"
-        case "Write": return "Claude 想写入文件"
-        case "Read": return "Claude 想读取文件"
-        case "WebFetch": return "Claude 想访问网页"
-        case "WebSearch": return "Claude 想搜索网页"
-        case "AskUserQuestion": return "Claude 有问题问你"
-        case "ExitPlanMode": return "Claude 想结束计划、开始动手"
-        default: return "Claude 想使用 \(request.displayName)"
+        case "Bash": return "\(controller.engine.displayName) 想运行命令"
+        case "Edit", "MultiEdit", "NotebookEdit": return "\(controller.engine.displayName) 想修改文件"
+        case "Write": return "\(controller.engine.displayName) 想写入文件"
+        case "Read": return "\(controller.engine.displayName) 想读取文件"
+        case "WebFetch": return "\(controller.engine.displayName) 想访问网页"
+        case "WebSearch": return "\(controller.engine.displayName) 想搜索网页"
+        case "AskUserQuestion": return "\(controller.engine.displayName) 有问题问你"
+        case "ExitPlanMode": return "\(controller.engine.displayName) 想结束计划、开始动手"
+        default: return "\(controller.engine.displayName) 想使用 \(request.displayName)"
         }
     }
 
@@ -86,7 +86,7 @@ struct PermissionCard: View {
             if let d = i["description"]?.string, !d.isEmpty { return "\(cmd)\n# \(d)" }
             return cmd
         case "Edit", "MultiEdit", "Write", "Read", "NotebookEdit":
-            return i["file_path"]?.string ?? i["notebook_path"]?.string
+            return i["file_path"]?.string ?? i["notebook_path"]?.string ?? i.serialized(pretty: true)
         case "WebFetch": return i["url"]?.string
         case "WebSearch": return i["query"]?.string
         case "ExitPlanMode": return i["plan"]?.string

@@ -10,6 +10,7 @@ struct ThreadSummary: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     var isDraft: Bool
     var liveStatus: String?
+    var engine: ConversationEngine = .claude
 }
 
 struct ProjectGroup: Identifiable, Hashable {
@@ -24,6 +25,7 @@ struct ThreadOverride: Codable, Sendable, Equatable {
     var customTitle: String? = nil
     var settings: ThreadSettings? = nil
     var hidden = false
+    var handoff: ConversationHandoff? = nil
 }
 
 @MainActor
@@ -38,6 +40,7 @@ final class ThreadStore {
     private(set) var controllers: [String: ConversationController] = [:]
     private(set) var isScanning = false
     private(set) var claudeMissing = false
+    private(set) var codexMissing = false
     /// 终端里的默认模型 / 强度（问 claude 本尊得来），给「跟随终端设置」「默认强度」显示具体值用。
     private(set) var terminalDefaults = ClaudeDefaults.Resolved() {
         didSet { if terminalDefaults != oldValue { pushDefaultsToControllers() } }
@@ -46,6 +49,8 @@ final class ThreadStore {
     private(set) var updateStatus = UpdateStatus.Result(failed: false)
     var updateBannerDismissed = false
     var query = ""
+    var takeoverError: String?
+    private(set) var takingOverId: String?
     var defaultSettings = ThreadSettings()
     var selectedId: String? {
         didSet {
@@ -76,13 +81,13 @@ final class ThreadStore {
 
     var groups: [ProjectGroup] {
         // 还没开口的草稿不进列表（Codex 的做法）；发过第一条就立刻出现，不等磁盘扫描。
-        var all: [ThreadSummary] = drafts.values.filter { controllers[$0.id]?.isDraft == false }
+        var all: [ThreadSummary] = drafts.values.filter { controllers[$0.id]?.isDraft == false || overrides[$0.id]?.handoff != nil }
         for r in records.values where drafts[r.id] == nil {
             let o = overrides[r.id]
             if o?.hidden == true { continue }
             all.append(ThreadSummary(id: r.id, title: o?.customTitle ?? r.title, cwd: r.cwd,
                                      createdAt: r.createdAt, updatedAt: r.updatedAt,
-                                     isDraft: false, liveStatus: live[r.id]))
+                                     isDraft: false, liveStatus: live[r.id], engine: r.engine))
         }
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         if !q.isEmpty {
@@ -103,7 +108,7 @@ final class ThreadStore {
         if let d = drafts[id] { return d }
         guard let r = records[id] else { return nil }
         return ThreadSummary(id: r.id, title: overrides[id]?.customTitle ?? r.title, cwd: r.cwd,
-                             createdAt: r.createdAt, updatedAt: r.updatedAt, isDraft: false, liveStatus: live[id])
+                             createdAt: r.createdAt, updatedAt: r.updatedAt, isDraft: false, liveStatus: live[id], engine: r.engine)
     }
 
     static func displayName(for cwd: String) -> String {
@@ -133,6 +138,14 @@ final class ThreadStore {
            let saved = try? JSONDecoder.standard.decode([String: ThreadOverride].self, from: data) {
             overrides = saved
         }
+        // Pending handoffs are drafts with a durable context attachment; retain them across app restarts.
+        for (id, override) in overrides where !override.hidden && records[id] == nil {
+            if let handoff = override.handoff {
+                drafts[id] = ThreadSummary(id: id, title: "接管：" + handoff.sourceTitle, cwd: handoff.cwd,
+                                          createdAt: handoff.createdAt, updatedAt: handoff.createdAt,
+                                          isDraft: true, liveStatus: nil, engine: .claude)
+            }
+        }
         if let data = defaultsData, let saved = try? JSONDecoder.standard.decode(ThreadSettings.self, from: data) {
             defaultSettings = saved
         }
@@ -142,7 +155,8 @@ final class ThreadStore {
         // 找 claude 要跑一次登录 shell，放后台；找到了顺手问它终端默认的模型 / 强度。
         Task.detached(priority: .utility) {
             let missing = ShellEnvironment.claudeExecutable() == nil
-            await MainActor.run { ThreadStore.shared.claudeMissing = missing }
+            let codexMissing = CodexProcess.executable() == nil
+            await MainActor.run { ThreadStore.shared.claudeMissing = missing; ThreadStore.shared.codexMissing = codexMissing }
             let resolved = ClaudeDefaults.probe()
             await MainActor.run { ThreadStore.shared.terminalDefaults = resolved }
         }
@@ -178,12 +192,26 @@ final class ThreadStore {
         }
         // -testBeginLogin 1：启动后直接弹「添加账号」面板（会真的起 claude auth login、开浏览器）。
         if defaults.bool(forKey: "testBeginLogin") { AccountStore.shared.beginLogin() }
+        // -testAddProvider 1：启动后直接弹「添加 API 提供方」面板（截图验界面用）。
+        if defaults.bool(forKey: "testAddProvider") { AccountStore.shared.addingProvider = true }
         // -testSwitchAccount <accountId>：启动后切到这个账号（配合 -testClaudeConfigDir 在沙盒里验证切换）。
         if let accountId = defaults.string(forKey: "testSwitchAccount"), !accountId.isEmpty {
             Task {
                 await AccountStore.shared.sync()
                 await AccountStore.shared.switchTo(accountId)
                 TestLog.write("testSwitchAccount done active=\(AccountStore.shared.activeId ?? "nil") error=\(AccountStore.shared.lastError ?? "-")")
+            }
+        }
+        // -testSwitchProvider <id>：启动后切到这个 API 提供方；-testSwitchProvider off：停用（配合 -testClaudeConfigDir）。
+        if let providerId = defaults.string(forKey: "testSwitchProvider"), !providerId.isEmpty {
+            Task {
+                await AccountStore.shared.sync()
+                if providerId == "off" {
+                    await AccountStore.shared.deactivateProvider()
+                } else {
+                    await AccountStore.shared.switchToProvider(providerId)
+                }
+                TestLog.write("testSwitchProvider done active=\(AccountStore.shared.activeProviderId ?? "nil") error=\(AccountStore.shared.lastError ?? "-")")
             }
         }
         guard let id = selectedId else { return }
@@ -198,6 +226,20 @@ final class ThreadStore {
             let providers = paths.split(separator: ":").compactMap { NSItemProvider(contentsOf: URL(fileURLWithPath: String($0))) }
             TestLog.write("testProviderDrop handled=\(DropHandler.handle(providers, controller: c)) providers=\(providers.count)")
             delay = 3
+        }
+        // -testWindowDrop "/a.png:/b.txt"：按落点投递拖放——先命中落点下面的视图链，按 AppKit 的规则（最深的、登记过这些
+        // 类型的视图接）挑出接手的视图，再把整套拖放喂给它。上面几条钩子都是直接喂给输入框，验不出「正文区是 WKWebView
+        // 时拖放被它截走」这种路由问题。-testWindowDropImage /x.png：拖的是图片字节（浏览器拖图那种）而不是文件。
+        // -testWindowDropY 0.5：落点在内容区从上往下的比例，默认正中（已有对话里那是正文）。
+        let dropPaths = defaults.string(forKey: "testWindowDrop") ?? ""
+        let dropImage = defaults.string(forKey: "testWindowDropImage") ?? ""
+        if !dropPaths.isEmpty || !dropImage.isEmpty {
+            let y = defaults.object(forKey: "testWindowDropY") == nil ? 0.5 : defaults.double(forKey: "testWindowDropY")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.probeWindowDrop(paths: dropPaths.split(separator: ":").map(String.init),
+                                      imagePath: dropImage.isEmpty ? nil : dropImage, fractionFromTop: y)
+            }
+            delay = 4
         }
         guard let prompt = defaults.string(forKey: "testPrompt") else { return }
         // -testPromptDelay <秒>：等附件挂好（或输入框里的拖放 / 粘贴钩子跑完）再发；正文可以为空，只发附件。
@@ -226,13 +268,68 @@ final class ThreadStore {
         }
     }
 
+    private func probeWindowDrop(paths: [String], imagePath: String?, fractionFromTop: Double) {
+        let windows = NSApp.windows.filter { $0.contentView != nil && $0.frame.width > 300 }
+        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first, let content = window.contentView else {
+            TestLog.write("testWindowDrop: no window"); return
+        }
+        let b = content.bounds
+        let point = content.convert(NSPoint(x: b.midX, y: b.maxY - b.height * fractionFromTop), to: nil)
+        let pb = NSPasteboard(name: NSPasteboard.Name("claude-shell-test-window-drop"))
+        pb.clearContents()
+        if !paths.isEmpty { pb.writeObjects(paths.map { URL(fileURLWithPath: $0) } as [NSURL]) }
+        if let imagePath, let png = try? Data(contentsOf: URL(fileURLWithPath: imagePath)) { pb.setData(png, forType: .png) }
+        let pbTypes = Set(pb.types ?? [])
+        // AppKit 派拖放的规则：落点下面最深的、登记过（registeredDraggedTypes 和剪贴板类型有交集）的视图接。
+        // 把落点下的视图链和各自登记的类型写进日志，再按这条规则挑出接手的视图，把整套拖放喂给它。
+        var chain: [String] = []
+        var target: NSView?
+        var v = content.hitTest(content.superview?.convert(point, from: nil) ?? point)
+        while let view = v {
+            let matches = !pbTypes.isDisjoint(with: view.registeredDraggedTypes)
+            chain.append("\(type(of: view))[\(view.registeredDraggedTypes.count) types\(matches ? ", match" : "")]")
+            if target == nil, matches { target = view }
+            v = view.superview
+        }
+        TestLog.write("testWindowDrop chain: " + chain.joined(separator: " < "))
+        guard let target else {
+            TestLog.write("testWindowDrop at \(point): no registered view under the point, attachments=\(selectedId.flatMap { controllers[$0]?.attachments.count } ?? -1)")
+            return
+        }
+        let info = TestDraggingInfo(pasteboard: pb, location: point, window: window)
+        let entered = target.draggingEntered(info)
+        let updated = target.draggingUpdated(info)
+        var performed = false
+        if target.prepareForDragOperation(info) {
+            performed = target.performDragOperation(info)
+            target.concludeDragOperation(info)
+        }
+        // 挂附件是异步的（要读文件、出缩略图），等一拍再数。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            let count = self?.selectedId.flatMap { self?.controllers[$0]?.attachments.count } ?? -1
+            TestLog.write("testWindowDrop at \(point) -> \(type(of: target)) entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) attachments=\(count)")
+        }
+    }
+
     func refresh() async {
         guard !isScanning else { return }
         TestLog.write("refresh begin")
         isScanning = true
         let previous = records
         let result = await Task.detached(priority: .utility) {
-            (SessionIndex.scan(previous: previous), SessionIndex.liveSessions())
+            var indexed: [String: SessionRecord] = [:]
+            var seenClaude = Set<String>()
+            let claudeRoots = [SessionIndex.projectsDir] + AppAuthPaths.claudeRuntimeHomes().map { $0.appendingPathComponent("projects") }
+            for root in claudeRoots {
+                let nativeRoot = root.resolvingSymlinksInPath()
+                guard seenClaude.insert(nativeRoot.path).inserted else { continue }
+                indexed.merge(SessionIndex.scan(previous: previous, projectsRoot: nativeRoot)) { old, new in
+                    new.updatedAt > old.updatedAt ? new : old
+                }
+            }
+            let codexHomes = [AppAuthPaths.localCodexHome(env: ShellEnvironment.environment())] + AppAuthPaths.codexRuntimeHomes()
+            indexed.merge(CodexHistory.scan(homes: codexHomes, previous: previous)) { _, new in new }
+            return (indexed, SessionIndex.liveSessions())
         }.value
         records = result.0
         applyLive(result.1)
@@ -274,17 +371,19 @@ final class ThreadStore {
     // MARK: - 对话
 
     @discardableResult
-    func newThread(cwd: String? = nil) -> String {
+    func newThread(cwd: String? = nil, engine: ConversationEngine? = nil) -> String {
+        let chosenEngine = engine ?? defaultSettings.engine
         let dir = cwd ?? NSHomeDirectory()
         // 当前已经是一个还没开口的新对话，就不再堆一个。
-        if let sid = selectedId, let d = drafts[sid], controllers[sid]?.isDraft ?? true {
+        if let sid = selectedId, let d = drafts[sid], overrides[sid]?.handoff == nil, controllers[sid]?.isDraft ?? true {
+            if d.engine != chosenEngine { setDraftEngine(sid, engine: chosenEngine) }
             if d.cwd == dir { return sid }
             setDraftCwd(sid, cwd: dir)
             return sid
         }
         let id = UUID().uuidString.lowercased()
         let now = Date()
-        drafts[id] = ThreadSummary(id: id, title: "新对话", cwd: dir, createdAt: now, updatedAt: now, isDraft: true, liveStatus: nil)
+        drafts[id] = ThreadSummary(id: id, title: "新对话", cwd: dir, createdAt: now, updatedAt: now, isDraft: true, liveStatus: nil, engine: chosenEngine)
         selectedId = id
         return id
     }
@@ -305,16 +404,50 @@ final class ThreadStore {
         guard var d = drafts[id] else { return }
         d.cwd = cwd
         drafts[id] = d
+        if var handoff = overrides[id]?.handoff {
+            handoff.cwd = cwd
+            overrides[id]?.handoff = handoff
+            saveOverrides()
+        }
         controllers[id]?.terminate()
         controllers[id] = nil
         prepareController(for: id)
     }
 
+    func setDraftEngine(_ id: String, engine: ConversationEngine) {
+        guard var draft = drafts[id], let controller = controllers[id], controller.isDraft, !controller.isWorking,
+              controller.handoff == nil else { return }
+        draft.engine = engine
+        drafts[id] = draft
+        updateSettings(id, ThreadSettings(engine: engine))
+    }
+
     func prepareController(for id: String) {
         if controllers[id] != nil { return }
         guard let cwd = drafts[id]?.cwd ?? records[id]?.cwd else { return }
-        let settings = overrides[id]?.settings ?? defaultSettings
-        let c = ConversationController(id: id, cwd: cwd, settings: settings, hasSessionFile: records[id] != nil)
+        let engine = drafts[id]?.engine ?? records[id]?.engine ?? .claude
+        var settings = overrides[id]?.settings ?? defaultSettings
+        if settings.engine != engine { settings = ThreadSettings(engine: engine) }
+        let c = ConversationController(id: id, cwd: cwd, settings: settings, hasSessionFile: records[id] != nil, sessionPath: records[id]?.path, handoff: overrides[id]?.handoff)
+        c.onSessionStarted = { [weak self] controller, oldId in
+            guard let self else { return }
+            self.controllers[oldId] = nil
+            self.controllers[controller.id] = controller
+            if var draft = self.drafts.removeValue(forKey: oldId) {
+                draft.id = controller.id
+                self.drafts[controller.id] = draft
+            }
+            if let override = self.overrides.removeValue(forKey: oldId) { self.overrides[controller.id] = override }
+            self.saveOverrides()
+            if self.selectedId == oldId { self.selectedId = controller.id }
+        }
+        c.onHandoffConsumed = { [weak self] controller, handoff in
+            guard let self else { return }
+            var override = self.overrides[controller.id] ?? ThreadOverride()
+            override.handoff = handoff
+            self.overrides[controller.id] = override
+            self.saveOverrides()
+        }
         c.onTurnFinished = { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
@@ -329,6 +462,45 @@ final class ThreadStore {
         controllers[id] = c
     }
 
+    func takeoverWithClaude(_ id: String) async {
+        guard takingOverId == nil else { return }
+        prepareController(for: id)
+        guard let source = controllers[id], source.engine == .codex, let summary = summary(for: id) else { return }
+        guard !source.showsActivity else {
+            takeoverError = "请等待源 Codex 对话完成，或先停止当前回复，再用 Claude 接管。"
+            return
+        }
+        takingOverId = id
+        takeoverError = nil
+        defer { takingOverId = nil }
+        do {
+            let transcript: [TranscriptItem]
+            if let path = source.sessionPath, FileManager.default.fileExists(atPath: path) {
+                // Native records retain original embedded images; UI previews may be thumbnails.
+                transcript = try await Task.detached(priority: .userInitiated) {
+                    try CodexHistory.load(url: URL(fileURLWithPath: path)).items
+                }.value
+            } else if source.historyLoaded { transcript = source.items }
+            else { throw HandoffFailure(message: "找不到源 Codex 会话记录。") }
+            let contextDirectory = supportDir.appendingPathComponent("handoffs", isDirectory: true)
+            let handoff = try await Task.detached(priority: .userInitiated) {
+                try ConversationHandoff.prepare(sourceThreadId: summary.id, sourceTitle: summary.title,
+                                                sourceEngine: .codex, cwd: summary.cwd, items: transcript,
+                                                directory: contextDirectory)
+            }.value
+            let target = UUID().uuidString.lowercased()
+            drafts[target] = ThreadSummary(id: target, title: "接管：" + summary.title, cwd: summary.cwd,
+                                          createdAt: handoff.createdAt, updatedAt: handoff.createdAt,
+                                          isDraft: true, liveStatus: nil, engine: .claude)
+            var override = ThreadOverride()
+            override.settings = ThreadSettings(engine: .claude)
+            override.handoff = handoff
+            overrides[target] = override
+            saveOverrides()
+            selectedId = target
+        } catch { takeoverError = error.localizedDescription }
+    }
+
     func rename(_ id: String, to title: String) {
         var o = overrides[id] ?? ThreadOverride()
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -341,6 +513,12 @@ final class ThreadStore {
     func hide(_ id: String) {
         if drafts[id] != nil {
             drafts[id] = nil
+            if overrides[id]?.handoff != nil {
+                var override = overrides[id] ?? ThreadOverride()
+                override.hidden = true
+                overrides[id] = override
+                saveOverrides()
+            }
         } else {
             var o = overrides[id] ?? ThreadOverride()
             o.hidden = true
@@ -353,6 +531,8 @@ final class ThreadStore {
     }
 
     func updateSettings(_ id: String, _ settings: ThreadSettings) {
+        var settings = settings
+        if let record = records[id] { settings.engine = record.engine }
         var o = overrides[id] ?? ThreadOverride()
         o.settings = settings
         overrides[id] = o

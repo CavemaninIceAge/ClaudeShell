@@ -5,6 +5,8 @@ import SwiftUI
 enum Theme {
     static let columnWidth: CGFloat = 780
 
+    static let sidebar = dynamic("#F7F7F7", "#191919")
+    static let sidebarInput = dynamic("#EEEEEE", "#242424")
     static let background = dynamic("#FFFFFF", "#212121")
     static let composerFill = dynamic("#FFFFFF", "#2A2A2A")
     static let cardFill = dynamic("#F7F7F7", "#2A2A2A")

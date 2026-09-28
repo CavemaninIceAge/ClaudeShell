@@ -29,6 +29,7 @@ struct TranscriptAttachment: Sendable, Codable, Equatable {
     var name: String
     var path: String?
     var preview: String?   // 图片：data:image/jpeg;base64,… 的缩略图
+    var sourceURL: String? = nil // 远程原图只保留引用，不自动请求网络
 }
 
 enum AttachmentMaker {
