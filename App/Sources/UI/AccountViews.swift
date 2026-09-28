@@ -57,7 +57,7 @@ struct AccountFooter: View {
 
 /// Shared by the native account menu and sidebar. Pushes explicitly describe their destination.
 struct AccountMenuItems: View {
-    private var accounts: AccountStore { AccountStore.shared }
+    @Environment(AccountStore.self) private var accounts
     var body: some View {
         Text("切换账号 · 仅在 Claudex Shell 内生效")
         Divider()

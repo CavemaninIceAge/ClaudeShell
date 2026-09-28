@@ -9,12 +9,12 @@
   --line-strong: rgba(26, 28, 31, 0.117);
   --line-subtle: rgba(26, 28, 31, 0.049);
   --ghost-hover: rgba(26, 28, 31, 0.0535);
-  --bubble: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --bubble: #e7f2ff;
   --panel: #f6f6f6;
   --code-bg: var(--ghost-hover);
   --code-fg: var(--fg);
   --inline-code-bg: color-mix(in srgb, var(--ghost-hover) 60%, var(--fg) 6%);
-  --link: #1a1c1f;
+  --link: #3b66bc;
   --warn: #b45309;
   --danger: #b91c1c;
   --selection: rgba(13, 13, 13, 0.14);
@@ -37,12 +37,12 @@
     --line-strong: rgba(255, 255, 255, 0.156);
     --line-subtle: rgba(255, 255, 255, 0.042);
     --ghost-hover: rgba(255, 255, 255, 0.078);
-    --bubble: color-mix(in oklab, #dfdfdf 5%, transparent);
+    --bubble: #20364f;
     --panel: #141414;
     --code-bg: var(--ghost-hover);
     --code-fg: var(--fg);
     --inline-code-bg: color-mix(in srgb, var(--ghost-hover) 60%, var(--fg) 6%);
-    --link: #dfdfdf;
+    --link: #8db5ff;
     --warn: #f5b453;
     --danger: #f87171;
     --selection: rgba(236, 236, 236, 0.22);
@@ -69,7 +69,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 ::selection { background: var(--selection); }
-a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; text-decoration-thickness: 1px; text-decoration-color: var(--fg-3); }
+a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; text-decoration-style: solid; text-decoration-thickness: 1px; text-decoration-color: transparent; }
 a:hover { text-decoration-color: var(--fg); }
 
 /* Codex Electron 的 48rem 列包含两侧 16px 留白，实际正文宽度上限 736px。 */
@@ -274,3 +274,15 @@ body { caret-color: var(--fg); }
   details > summary .chev, .codeblock-head button { transition: none; }
   details.step > summary .spinner { animation: none; }
 }
+
+/* Complete-shell message controls, matching the supplied Work/Codex reference. */
+.turn-activity { margin-bottom: 8px; }
+.turn-activity > summary { display: flex; width: 100%; padding: 8px 0; border-bottom: 1px solid var(--line); color: var(--fg-3); font-size: 13px; }
+.turn-activity-body { padding: 12px 0; display: flex; flex-direction: column; gap: 8px; }
+.response-actions { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.response-actions button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--fg-3); cursor: default; }
+.response-actions button:hover, .response-actions button[aria-pressed="true"] { background: var(--ghost-hover); color: var(--fg); }
+.response-actions button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.response-actions svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+body.response-focused .item { display: none; }
+body.response-focused .item.focused-response { display: flex; }

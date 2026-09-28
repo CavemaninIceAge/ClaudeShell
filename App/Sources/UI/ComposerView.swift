@@ -8,12 +8,19 @@ struct ComposerView: View {
     var dropTargeted = false
     @Environment(ThreadStore.self) private var store
     @Environment(\.colorScheme) private var colorScheme
-    @State private var text = ""
+    private var text: String {
+        get { controller.composerDraft }
+        nonmutating set { controller.composerDraft = newValue }
+    }
     @State private var isComposing = false
     @State private var editorHeight: CGFloat = 22
     @State private var editorDropTargeted = false
     @State private var editingModel = false
     @State private var customModel = ""
+    @State private var dictation = DictationController()
+    @State private var dictationBaseText = ""
+    @State private var lastDictationText = ""
+    @AppStorage("workspaceDictationLocale") private var dictationLocale = ""
 
     private var liveInTerminal: Bool { controller.isLiveInTerminal }
     private var isCodex: Bool { controller.engine == .codex }
@@ -72,13 +79,14 @@ struct ComposerView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 4)
             }
+            if let status = dictation.statusText { dictationStatus(status) }
             if controller.isDraft { contextRow }
             VStack(alignment: .leading, spacing: 4) {
                 if !controller.attachments.isEmpty {
                     AttachmentStrip(attachments: controller.attachments) { controller.removeAttachment($0) }
                         .padding(.horizontal, 8)
                 }
-                ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
+                ComposerTextView(text: Binding(get: { text }, set: { text = $0 }), isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
                                  onDropFiles: { controller.attach(urls: $0) },
                                  onDropImage: { controller.attach(imageData: $0, name: $1) },
                                  onDropTargeted: { editorDropTargeted = $0 })
@@ -93,15 +101,17 @@ struct ComposerView: View {
                         }
                     }
                     .padding(.horizontal, 12)
-                HStack(spacing: 5) {
-                    attachButton
-                    permissionMenu
-                    Spacer(minLength: 8)
-                    modelMenu
-                        .layoutPriority(-1)
-                    sendButton
-                        .padding(.leading, 8)
+                GeometryReader { geometry in
+                    HStack(spacing: 5) {
+                        attachButton
+                        permissionMenu(compact: geometry.size.width < 470)
+                        Spacer(minLength: 8)
+                        modelMenu.layoutPriority(-1)
+                        microphoneButton
+                        sendButton.padding(.leading, 8)
+                    }
                 }
+                .frame(height: 28)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
@@ -122,6 +132,18 @@ struct ComposerView: View {
         } message: {
             Text("填写当前账号可用的模型 ID；留空恢复引擎默认模型。")
         }
+        .onChange(of: dictation.transcript) { _, result in applyDictation(result) }
+        .onChange(of: text) { _, newText in
+            if dictation.isActive && newText != lastDictationText {
+                dictation.cancel(message: "已结束听写，保留你的编辑。")
+            }
+        }
+        .onChange(of: isComposing) { _, composing in
+            if composing && dictation.isActive { dictation.cancel(message: "已结束听写，可继续使用输入法。") }
+        }
+        .onChange(of: controller.id) { _, _ in dictation.cancel() }
+        .onChange(of: controller.isWorking) { _, working in if working { dictation.cancel() } }
+        .onDisappear { dictation.cancel() }
     }
 
     private var contextRow: some View {
@@ -225,12 +247,77 @@ struct ComposerView: View {
         .accessibilityLabel(controller.isWorking ? "停止生成" : "发送消息")
     }
 
+    private var microphoneButton: some View {
+        Button {
+            if dictation.isRecording { dictation.finish() }
+            else if dictation.isActive { dictation.cancel() }
+            else {
+                dictationBaseText = text
+                lastDictationText = text
+                dictation.begin(localeIdentifier: dictationLocale)
+            }
+        } label: {
+            ComposerControlLabel(icon: dictation.isActive ? "stop.circle" : "mic", title: nil)
+                .background(RoundedRectangle(cornerRadius: 7).fill(dictation.isRecording ? Theme.sendFill.opacity(0.1) : .clear))
+        }
+        .buttonStyle(.plain)
+        .disabled(isComposing || controller.isWorking)
+        .help(dictation.isActive ? "结束听写" : "听写；右键可选语言。系统识别可能使用 Apple 在线服务。")
+        .accessibilityLabel(dictation.isActive ? "结束听写" : "开始听写")
+        .contextMenu {
+            Text("听写语言")
+            ForEach([("", "跟随系统"), ("zh-CN", "中文（普通话）"), ("en-US", "English (US)")], id: \.0) { option in
+                Button {
+                    dictation.cancel()
+                    dictationLocale = option.0
+                } label: {
+                    if dictationLocale == option.0 { Label(option.1, systemImage: "checkmark") }
+                    else { Text(option.1) }
+                }
+            }
+            Divider()
+            Text("识别结果仅填入输入框，不会自动发送")
+        }
+    }
+
+    private func dictationStatus(_ status: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: dictation.isError ? "exclamationmark.circle" : (dictation.isRecording ? "mic.fill" : "waveform"))
+                .foregroundStyle(dictation.isError || dictation.isRecording ? Theme.danger : Theme.textSecondary)
+            Text(status).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if dictation.isActive {
+                Button("停止") {
+                    if dictation.isRecording { dictation.finish() } else { dictation.cancel() }
+                }.buttonStyle(.plain)
+            } else {
+                Button { dictation.clearNotice() } label: { Image(systemName: "xmark").frame(width: 16, height: 16) }
+                    .buttonStyle(.plain).accessibilityLabel("关闭听写提示")
+            }
+        }
+        .font(.system(size: 12)).foregroundStyle(dictation.isError ? Theme.danger : Theme.textSecondary)
+        .padding(.horizontal, 12).padding(.bottom, 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func applyDictation(_ result: String) {
+        guard !result.isEmpty else { return }
+        guard !isComposing, text == lastDictationText else {
+            if dictation.isActive { dictation.cancel(message: "已结束听写，保留你的编辑。") }
+            return
+        }
+        let separator = dictationBaseText.isEmpty || dictationBaseText.last?.isWhitespace == true ? "" : " "
+        lastDictationText = dictationBaseText + separator + result
+        text = lastDictationText
+    }
+
     private func updateModel(_ model: String) {
         var s = controller.settings; s.model = model.isEmpty ? nil : model; store.updateSettings(controller.id, s)
     }
 
     private func submit() {
         guard canSend else { return }
+        dictation.cancel()
         let t = text; text = ""; editorHeight = 22
         if liveInTerminal { controller.sendToTerminal(t) } else { controller.send(t) }
     }
@@ -264,7 +351,7 @@ struct ComposerView: View {
         .help("工作目录：\(controller.cwd)\(controller.isDraft ? "" : "（会话开始后不能更改）")")
     }
 
-    private var permissionMenu: some View {
+    private func permissionMenu(compact: Bool) -> some View {
         Menu {
             Text("权限模式")
             ForEach(permissionOptions, id: \.id) { option in
@@ -278,7 +365,10 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            ComposerControlLabel(icon: "checkmark.shield", title: nil, chevron: false)
+            ComposerControlLabel(icon: controller.settings.permissionMode == "auto" ? "clock.arrow.circlepath" : "checkmark.shield",
+                                 title: compact ? nil : (controller.settings.permissionMode == "auto" ? "Approve for me" : permissionTitle),
+                                 chevron: false)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)

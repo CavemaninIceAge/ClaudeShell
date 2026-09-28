@@ -26,6 +26,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
+python3 - "$APP_DIR/Contents/Info.plist" <<'PYCODE'
+import plistlib, sys
+with open('App/Info.plist', 'rb') as f: production = plistlib.load(f)
+with open(sys.argv[1], 'rb') as f: preview = plistlib.load(f)
+for key in ['CFBundleShortVersionString', 'CFBundleVersion']:
+    preview[key] = production[key]
+with open(sys.argv[1], 'wb') as f: plistlib.dump(preview, f)
+PYCODE
 # Use exactly the production transcript resources; no copied mock layout or CSS.
 cp -R App/Resources/web "$APP_DIR/Contents/Resources/"
 PREVIEW_TEMP="$(mktemp -d "${TMPDIR:-/private/tmp}/claudex-ui-preview.XXXXXX")"

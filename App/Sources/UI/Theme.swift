@@ -4,12 +4,16 @@ import SwiftUI
 /// 和 web/transcript.css 里的 token 一一对应；改一处要改两处。
 enum Theme {
     static let columnWidth: CGFloat = 768
-    static let sidebarWidth: CGFloat = 275
-    static let toolbarHeight: CGFloat = 46
+    static let sidebarWidth: CGFloat = 288
+    static let railWidth: CGFloat = 52
+    static let toolbarHeight: CGFloat = 44
     static let titlebarHeight: CGFloat = 44
     static let controlSize: CGFloat = 28
 
-    static let sidebar = dynamic("#F6F6F6", "#141414")
+    static let sidebar = dynamic("#FBFBFB", "#181818")
+    static let rail = dynamic("#F5F5F5", "#141414")
+    static let toolbar = dynamic("#F3F3F3", "#141414")
+    static let accent = dynamic("#347CF7", "#6BA1FF")
     static let sidebarInput = dynamic("#EEEEEE", "#242424")
     static let background = dynamic("#FFFFFF", "#181818")
     static let composerFill = dynamic("#FFFFFF", "#363636")
@@ -24,8 +28,8 @@ enum Theme {
     static let placeholder = inkOpacity(light: 0.495, dark: 0.498)
     static let iconMuted = dynamic("#8A8A8A", "#8E8E8E")
     static let chipFill = dynamic("#F2F2F2", "#333333")
-    static let sendFill = dynamic("#1A1C1F", "#DFDFDF")
-    static let sendFg = dynamic("#FFFFFF", "#181818")
+    static let sendFill = dynamic("#347CF7", "#6BA1FF")
+    static let sendFg = dynamic("#FFFFFF", "#111111")
     static let warn = dynamic("#B45309", "#F5B453")
     static let danger = dynamic("#B91C1C", "#F87171")
     static let live = dynamic("#1F9D55", "#4ADE80")

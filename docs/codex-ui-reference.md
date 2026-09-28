@@ -1,5 +1,7 @@
 # Installed Codex desktop static reference
 
+For 0.3.0, the user-provided full-app screenshots take precedence for the outer shell, navigation, theme accents and inspector. This earlier spec describes a different inner-workspace variant; see [DESIGN.md](../DESIGN.md) for the corrected application scope.
+
 Read-only inspection on 2026-09-28. Actual app is `/Applications/ChatGPT.app`, bundle identifier `com.openai.codex`, version `26.924.22138`, build `11645`. The static archive is `/Applications/ChatGPT.app/Contents/Resources/app.asar`. No application was launched, foregrounded, controlled, or screen-captured; no account settings, chats, or private database was read.
 
 All archive-relative evidence paths below start with `webview/assets/`. These are measurements and source interpretations, not an exact visual reference screenshot. The installed app includes Codex, Work, browser, compact, feature-gated, and customized theme variants. This spec describes the normal desktop Codex defaults; runtime user settings and active experiments were intentionally not queried.

@@ -18,18 +18,13 @@ struct ClaudexShellApp: App {
                 .frame(minWidth: 880, minHeight: 560)
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: 1566, height: 895)
         .commands {
             CommandGroup(replacing: .appTermination) {
                 Button("退出 Claudex Shell") { AppDelegate.quit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
-            CommandGroup(replacing: .newItem) {
-                Button("新对话") { store.newThread() }
-                    .keyboardShortcut("n", modifiers: .command)
-                Button("在文件夹中新建对话…") { store.newThreadPickingFolder() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-            }
+            WorkspaceCommands(store: store)
             CommandMenu("对话") {
                 Button("停止生成") { store.selectedController?.stop() }
                     .keyboardShortcut(".", modifiers: .command)
@@ -46,7 +41,7 @@ struct ClaudexShellApp: App {
             }
             // 账号选择只影响本应用；推送至终端 / Codex App 是单独的操作。
             CommandMenu("账号") {
-                AccountMenuItems()
+                AccountMenuItems().environment(AccountStore.shared)
             }
         }
     }

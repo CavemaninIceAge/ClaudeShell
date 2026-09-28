@@ -61,6 +61,8 @@ final class ConversationController: @preconcurrency Identifiable {
     var terminalDefaultEffort: String? = nil
     /// 输入框里挂着、还没发出去的附件（拖 / 贴 / 「+」选进来的），随对话走，切换对话不丢。
     private(set) var attachments: [ComposerAttachment] = []
+    /// Unsent text belongs to the conversation, so visiting another page cannot discard it.
+    var composerDraft = ""
     var settings: ThreadSettings {
         didSet { if settings != oldValue { settingsChanged() } }
     }
@@ -275,6 +277,11 @@ final class ConversationController: @preconcurrency Identifiable {
         let paths = Set(attachments.compactMap(\.path))
         attachments += new.filter { $0.path == nil || !paths.contains($0.path!) }
         TestLog.write("attachments: \(attachments.map { "\($0.kind) \($0.name)" })")
+    }
+
+    func restoreComposerDraft(text: String, attachments: [ComposerAttachment]) {
+        composerDraft = text
+        self.attachments = attachments
     }
 
     func removeAttachment(_ id: String) {

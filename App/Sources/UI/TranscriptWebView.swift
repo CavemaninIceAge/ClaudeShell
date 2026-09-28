@@ -57,6 +57,7 @@ final class TranscriptWKWebView: WKWebView {
 }
 
 struct TranscriptWebView: NSViewRepresentable {
+    @Environment(WorkspaceContentStore.self) private var content
     let controller: ConversationController
     var onDropTargeted: (Bool) -> Void = { _ in }   // 文件 / 照片拖过正文时，输入框跟着亮边
 
@@ -119,6 +120,9 @@ struct TranscriptWebView: NSViewRepresentable {
             for (index, item) in items.enumerated() where sentRevs[item.id] != item.rev {
                 if let data = try? JSONEncoder.standard.encode(item), let s = String(data: data, encoding: .utf8) {
                     js += "CS.upsert(\(s), \(index));"
+                    let key = parent.controller.id + ":" + item.id
+                    let feedback = UserDefaults.standard.dictionary(forKey: "workspaceResponseFeedback")?[key] as? Bool ?? false
+                    js += "CSResponseActions.setFeedback(\(JSONValue.string(item.id).serialized()), \(feedback ? "true" : "false"));"
                 }
                 sentRevs[item.id] = item.rev
             }
@@ -172,6 +176,25 @@ struct TranscriptWebView: NSViewRepresentable {
                 }
             case "open":
                 if let s = body["url"] as? String, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+            case "copy_response", "response_feedback", "save_response":
+                guard let id = body["id"] as? String,
+                      let item = parent.controller.items.first(where: { $0.id == id && $0.kind == .assistant }) else { return }
+                if type == "copy_response" {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(WorkspaceResponseArchive.text(of: item), forType: .string)
+                } else if type == "response_feedback", let liked = body["liked"] as? Bool {
+                    var feedback = UserDefaults.standard.dictionary(forKey: "workspaceResponseFeedback") ?? [:]
+                    feedback[parent.controller.id + ":" + id] = liked
+                    UserDefaults.standard.set(feedback, forKey: "workspaceResponseFeedback")
+                } else if type == "save_response" {
+                    do {
+                        let url = try WorkspaceResponseArchive.save(item, threadID: parent.controller.id)
+                        parent.content.add(url: url, threadID: parent.controller.id)
+                        if parent.content.lastError == nil {
+                            webView?.evaluateJavaScript("CSResponseActions.saved(\(JSONValue.string(id).serialized()));", completionHandler: nil)
+                        }
+                    } catch { parent.content.lastError = error.localizedDescription }
+                }
             case "copy":
                 if let text = body["text"] as? String {
                     NSPasteboard.general.clearContents()

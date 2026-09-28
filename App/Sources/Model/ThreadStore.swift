@@ -48,6 +48,7 @@ final class ThreadStore {
     /// Claude Code 上次自更新失败了没：失败就在侧栏底部挂一条提示（和终端一样）。用户点掉就不再显示这一条。
     private(set) var updateStatus = UpdateStatus.Result(failed: false)
     var updateBannerDismissed = false
+    private(set) var threadIdentityChanges: [String: String] = [:]
     var query = ""
     var takeoverError: String?
     private(set) var takingOverId: String?
@@ -200,6 +201,15 @@ final class ThreadStore {
         }
         await refresh()
         runTestHooksIfNeeded()
+    }
+
+    /// Re-probe installed engines after a user installs or updates a CLI.
+    func refreshEngineAvailability() async {
+        let available = await Task.detached(priority: .utility) {
+            (ShellEnvironment.claudeExecutable() != nil, CodexProcess.executable() != nil)
+        }.value
+        claudeMissing = !available.0
+        codexMissing = !available.1
     }
 
     /// 自动化验证用：`open -n "Claude Shell.app" --args -testPrompt "…" -testModel haiku -testMode manual`
@@ -407,7 +417,8 @@ final class ThreadStore {
         return id
     }
 
-    func newThreadPickingFolder() {
+    @discardableResult
+    func newThreadPickingFolder() -> String? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
@@ -415,12 +426,17 @@ final class ThreadStore {
         panel.prompt = "在这里开始对话"
         panel.message = "选择 Claude 的工作目录"
         if panel.runModal() == .OK, let url = panel.url {
-            newThread(cwd: url.path)
+            return newThread(cwd: url.path)
         }
+        return nil
     }
 
     func setDraftCwd(_ id: String, cwd: String) {
         guard var d = drafts[id] else { return }
+        let prior = controllers[id]
+        let text = prior?.composerDraft ?? ""
+        let attachments = prior?.attachments ?? []
+        let settings = prior?.settings
         d.cwd = cwd
         drafts[id] = d
         if var handoff = overrides[id]?.handoff {
@@ -431,6 +447,8 @@ final class ThreadStore {
         controllers[id]?.terminate()
         controllers[id] = nil
         prepareController(for: id)
+        controllers[id]?.restoreComposerDraft(text: text, attachments: attachments)
+        if let settings { controllers[id]?.settings = settings }
     }
 
     func setDraftEngine(_ id: String, engine: ConversationEngine) {
@@ -458,6 +476,13 @@ final class ThreadStore {
             }
             if let override = self.overrides.removeValue(forKey: oldId) { self.overrides[controller.id] = override }
             self.saveOverrides()
+            self.threadIdentityChanges[oldId] = controller.id
+            if let raw = UserDefaults.standard.string(forKey: "workspacePinnedThreads"),
+               let pinned = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)), pinned.contains(oldId),
+               let data = try? JSONEncoder().encode(pinned.map { $0 == oldId ? controller.id : $0 }),
+               let text = String(data: data, encoding: .utf8) {
+                UserDefaults.standard.set(text, forKey: "workspacePinnedThreads")
+            }
             if self.selectedId == oldId { self.selectedId = controller.id }
         }
         c.onHandoffConsumed = { [weak self] controller, handoff in

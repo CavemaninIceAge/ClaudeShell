@@ -6,6 +6,8 @@
   const list = document.getElementById('list');
   const workingEl = document.getElementById('working');
   const workingText = document.getElementById('working-text');
+  const reactions = new Map();
+  const savedResponses = new Set();
   const nodes = new Map();       // item id → article
   const blockCache = new Map();  // block id / group id → { key, el, live }
   const HOME = window.CS_HOME || '';
@@ -241,7 +243,21 @@
   }
 
   function renderAssistant(el, item) {
-    const blocks = item.blocks || [];
+    let blocks = item.blocks || [];
+    if (item.done && blocks.some(b => b.kind === 'tool' || b.kind === 'thinking')) {
+      const activity = document.createElement('details');
+      activity.className = 'turn-activity';
+      const summary = document.createElement('summary');
+      const milliseconds = item.meta && item.meta.durationMs;
+      const duration = milliseconds ? (milliseconds >= 60000 ? Math.floor(milliseconds / 60000) + '分' + Math.floor(milliseconds % 60000 / 1000) + '秒' : Math.max(1, Math.round(milliseconds / 1000)) + '秒') : '';
+      summary.innerHTML = '<span>' + (duration ? '已工作 ' + duration : '查看工作过程') + '</span><span class="chev">' + icon('chevron') + '</span>';
+      const body = document.createElement('div'); body.className = 'turn-activity-body';
+      const tools = blocks.filter(b => b.kind === 'tool');
+      if (tools.length) body.appendChild(renderToolGroup(tools, false));
+      for (const thinking of blocks.filter(b => b.kind === 'thinking' && b.text.trim())) body.appendChild(renderBlock(thinking));
+      activity.append(summary, body); el.appendChild(activity);
+      blocks = blocks.filter(b => b.kind === 'text');
+    }
     let i = 0;
     while (i < blocks.length) {
       const b = blocks[i];
@@ -292,6 +308,24 @@
       }
     } else {
       renderAssistant(el, item);
+      if (item.done && (item.blocks || []).some(b => b.kind === 'text' && b.text)) {
+        const actions = document.createElement('div'); actions.className = 'response-actions';
+        const icons = {
+          copy: '<rect x="6" y="6" width="11" height="12" rx="2"/><path d="M13 6V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/>',
+          like: '<path d="M6 9l4-7c3 0 2 4 1 6h5a2 2 0 0 1 2 2l-2 7H6zM2 9h4v8H2z"/>',
+          focus: '<path d="M12 2h6v6M18 2l-7 7M8 18H2v-6M2 18l7-7"/>',
+          save: '<path d="M10 2v11m-4-4 4 4 4-4M3 13v5h14v-5"/>'
+        };
+        for (const [action, title] of [['copy','复制回答'],['like','赞（仅本机记录）'],['focus','聚焦这条回答'],['save','保存回答到资料库']]) {
+          const button = document.createElement('button'); button.type = 'button'; button.dataset.responseAction = action;
+          button.title = title; button.setAttribute('aria-label', title);
+          if (action === 'like') button.setAttribute('aria-pressed', reactions.get(item.id) === true ? 'true' : 'false');
+          if (action === 'save' && savedResponses.has(item.id)) button.title = '已保存到资料库';
+          button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true">' + icons[action] + '</svg>';
+          actions.appendChild(button);
+        }
+        el.appendChild(actions);
+      }
     }
     return el;
   }
@@ -345,6 +379,27 @@
       post({ type: 'open', url: 'file://' + encodeURI(att.dataset.path) });
       return;
     }
+    const responseAction = e.target.closest('button[data-response-action]');
+    if (responseAction) {
+      const article = responseAction.closest('article');
+      const id = article.dataset.id;
+      const action = responseAction.dataset.responseAction;
+      if (action === 'copy') {
+        post({type: 'copy_response', id}); responseAction.title = '已复制';
+        setTimeout(() => { responseAction.title = '复制回答'; }, 1200);
+      } else if (action === 'like') {
+        const liked = !(reactions.get(id) === true); reactions.set(id, liked);
+        responseAction.setAttribute('aria-pressed', liked ? 'true' : 'false');
+        post({type: 'response_feedback', id, liked});
+      } else if (action === 'focus') {
+        const focused = !article.classList.contains('focused-response');
+        document.querySelectorAll('.focused-response').forEach(node => node.classList.remove('focused-response'));
+        article.classList.toggle('focused-response', focused); document.body.classList.toggle('response-focused', focused);
+        responseAction.title = focused ? '返回完整对话' : '聚焦这条回答';
+        responseAction.setAttribute('aria-label', responseAction.title);
+      } else if (action === 'save') post({type: 'save_response', id});
+      return;
+    }
     const btn = e.target.closest('button[data-copy]');
     if (btn) {
       const code = btn.closest('.codeblock').querySelector('pre');
@@ -359,6 +414,11 @@
       }, 1200);
     }
   });
+
+  window.CSResponseActions = {
+    setFeedback(id, liked) { reactions.set(id, liked); const article = nodes.get(id); if (article) article.querySelector('[data-response-action="like"]')?.setAttribute('aria-pressed', liked ? 'true' : 'false'); },
+    saved(id) { savedResponses.add(id); const article = nodes.get(id); if (article) { const button = article.querySelector('[data-response-action="save"]'); if (button) { button.title = '已保存到资料库'; button.setAttribute('aria-label', button.title); } } }
+  };
 
   function post(msg) {
     try { window.webkit.messageHandlers.bridge.postMessage(msg); } catch (e) { /* 浏览器里预览时没有桥 */ }

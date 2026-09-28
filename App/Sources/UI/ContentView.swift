@@ -3,56 +3,146 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(ThreadStore.self) private var store
+    @State private var navigation = WorkspaceNavigation()
+    @State private var content = WorkspaceContentStore()
+    @AppStorage("workspaceAppearance") private var appearance = "system"
     var body: some View {
         WorkspaceView()
+            .environment(navigation)
+            .environment(content)
+            .focusedSceneValue(\.workspaceNavigation, navigation)
+            .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
             .background(WorkspaceWindowStyle())
-            .task { await store.bootstrap() }
+            .task { content.load(); await store.bootstrap() }
     }
 }
 
-/// The same complete shell is used by the app and the isolated offscreen renderer.
+/// The complete application shell; production and offline fixtures render the same view.
 struct WorkspaceView: View {
     @Environment(ThreadStore.self) private var store
+    @Environment(AccountStore.self) private var accounts
+    @Environment(WorkspaceNavigation.self) private var navigation
+    @Environment(WorkspaceContentStore.self) private var content
     @State private var sidebarVisible = true
     @State private var sidebarWidth = Theme.sidebarWidth
     @State private var resizeOrigin: CGFloat?
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: 0) {
-                if sidebarVisible {
-                    SidebarView(onToggleSidebar: toggleSidebar)
-                        .frame(width: min(sidebarWidth, max(240, geometry.size.width - 320)))
-                    sidebarDivider(totalWidth: geometry.size.width)
-                }
-                VStack(spacing: 0) {
-                    WorkspaceToolbar(sidebarVisible: sidebarVisible, onToggleSidebar: toggleSidebar)
-                    if let id = store.selectedId, let controller = store.controllers[id] {
-                        ThreadView(controller: controller).id(id)
-                    } else {
-                        VStack(spacing: 18) {
-                            Text("开始新对话").font(.system(size: 28))
-                            Button("新对话") { store.newThread() }.buttonStyle(PrimaryButtonStyle())
+            let width = min(sidebarWidth, max(240, geometry.size.width - Theme.railWidth - 420))
+            let inlineInspector = geometry.size.width >= 1240
+            VStack(spacing: 0) {
+                WorkspaceToolbar(sidebarVisible: sidebarVisible, sidebarWidth: width, onToggleSidebar: toggleSidebar)
+                HStack(spacing: 0) {
+                    AppNavigationRail()
+                        .frame(width: Theme.railWidth)
+                    HStack(spacing: 0) {
+                        if sidebarVisible {
+                            SidebarView(onToggleSidebar: toggleSidebar).frame(width: width)
+                            sidebarDivider(totalWidth: geometry.size.width)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        page
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Theme.background)
+                        if navigation.route == .home && navigation.inspectorVisible && inlineInspector {
+                            inspector.frame(width: 300).padding(.leading, 8).padding(.trailing, 8)
+                                .padding(.top, 6).frame(maxHeight: .infinity, alignment: .top)
+                        }
                     }
+                    .background(Theme.background)
+                    .clipShape(UnevenRoundedRectangle(topLeadingRadius: 16, bottomLeadingRadius: 16))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.background)
+            }
+            .background(Theme.rail)
+            .overlay(alignment: .topTrailing) {
+                if navigation.route == .home && navigation.inspectorVisible && !inlineInspector {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button { navigation.inspectorVisible = false } label: {
+                            Label("关闭详情", systemImage: "xmark")
+                                .font(.system(size: 12)).padding(8)
+                                .background(Theme.background, in: Capsule())
+                        }.buttonStyle(.plain)
+                        inspector.frame(width: 300)
+                    }
+                    .padding(.top, Theme.toolbarHeight + 8).padding(.trailing, 8)
+                }
+            }
+            .onChange(of: geometry.size.width, initial: true) { _, newWidth in
+                if newWidth < 1240 { navigation.inspectorVisible = false }
             }
         }
-        .background(Theme.background)
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(Theme.textPrimary)
-        .tint(Theme.textPrimary)
-        .alert("接管未完成", isPresented: Binding(
-            get: { store.takeoverError != nil },
-            set: { if !$0 { store.takeoverError = nil } }
-        )) {
+        .tint(Theme.accent)
+        .onAppear { navigation.seed(threadID: store.selectedId); recordArtifacts() }
+        .onChange(of: store.selectedId) { previous, id in
+            if previous == nil { navigation.seed(threadID: id) }
+            if let previous, let id, store.threadIdentityChanges[previous] == id {
+                navigation.replaceThreadID(from: previous, to: id)
+                content.reassociateThread(from: previous, to: id)
+            } else if navigation.location.threadID != id {
+                navigation.visit(.home, threadID: id)
+            }
+            recordArtifacts()
+        }
+        .onChange(of: store.threadIdentityChanges) { old, new in
+            for (previous, current) in new where old[previous] != current {
+                navigation.replaceThreadID(from: previous, to: current)
+                content.reassociateThread(from: previous, to: current)
+            }
+        }
+        .onChange(of: navigation.location) { _, location in
+            if location.route == .home, let id = location.threadID, store.selectedId != id {
+                store.selectedId = id
+            }
+        }
+        .onChange(of: store.selectedController?.items) { _, _ in recordArtifacts() }
+        .sheet(isPresented: Binding(get: { navigation.searchPresented }, set: { navigation.searchPresented = $0 })) {
+            WorkspaceSearchSheet()
+        }
+        .sheet(item: Binding(get: { accounts.loginSession }, set: { if $0 == nil { accounts.loginSession = nil } })) {
+            AccountLoginSheet(session: $0)
+        }
+        .sheet(isPresented: Binding(get: { accounts.addingProvider }, set: { accounts.addingProvider = $0 })) { ProviderAddSheet() }
+        .alert("接管未完成", isPresented: Binding(get: { store.takeoverError != nil }, set: { if !$0 { store.takeoverError = nil } })) {
             Button("好") { store.takeoverError = nil }
         } message: { Text(store.takeoverError ?? "") }
+        .alert("操作未完成", isPresented: Binding(
+            get: { accounts.lastError != nil || content.lastError != nil },
+            set: { if !$0 { accounts.lastError = nil; content.lastError = nil } }
+        )) {
+            Button("好") { accounts.lastError = nil; content.lastError = nil }
+        } message: { Text(accounts.lastError ?? content.lastError ?? "") }
     }
 
+    @ViewBuilder private var page: some View {
+        switch navigation.route {
+        case .home:
+            if let id = store.selectedId, let controller = store.controllers[id] {
+                ThreadView(controller: controller).id(id)
+            } else {
+                VStack(spacing: 18) {
+                    Text("我们开始吧").font(.system(size: 28))
+                    Button("新聊天") { store.newThread() }.buttonStyle(PrimaryButtonStyle())
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .history: WorkspaceHistoryPage()
+        case .library: WorkspaceLibraryPage()
+        case .images: WorkspaceImagesPage()
+        case .apps: WorkspaceAppsPage()
+        case .settings: WorkspaceSettingsPage()
+        }
+    }
+    private var inspector: some View {
+        WorkspaceInspector()
+            .background(Theme.background, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(Theme.line, lineWidth: 0.75))
+            .shadow(color: .black.opacity(0.06), radius: 12, x: 0, y: 3)
+    }
+    private func recordArtifacts() {
+        guard let c = store.selectedController else { return }
+        content.recordArtifacts(items: c.items, cwd: c.cwd, threadID: c.id)
+    }
     private func toggleSidebar() { sidebarVisible.toggle() }
     private func sidebarDivider(totalWidth: CGFloat) -> some View {
         Rectangle().fill(Theme.sidebarSeparator).frame(width: 1)
@@ -61,57 +151,48 @@ struct WorkspaceView: View {
                     .gesture(DragGesture(minimumDistance: 1)
                         .onChanged { value in
                             if resizeOrigin == nil { resizeOrigin = sidebarWidth }
-                            sidebarWidth = min(min(520, totalWidth - 320), max(240, (resizeOrigin ?? sidebarWidth) + value.translation.width))
-                        }
-                        .onEnded { _ in resizeOrigin = nil })
+                            sidebarWidth = min(min(440, totalWidth - Theme.railWidth - 420), max(240, (resizeOrigin ?? sidebarWidth) + value.translation.width))
+                        }.onEnded { _ in resizeOrigin = nil })
             }
             .accessibilityLabel("侧栏宽度")
             .accessibilityAdjustableAction { direction in
-                sidebarWidth = min(min(520, totalWidth - 320), max(240, sidebarWidth + (direction == .increment ? 20 : -20)))
+                sidebarWidth = min(min(440, totalWidth - Theme.railWidth - 420), max(240, sidebarWidth + (direction == .increment ? 20 : -20)))
             }
     }
 }
 
 struct WorkspaceToolbar: View {
     @Environment(ThreadStore.self) private var store
+    @Environment(WorkspaceNavigation.self) private var navigation
     let sidebarVisible: Bool
+    let sidebarWidth: CGFloat
     let onToggleSidebar: () -> Void
     private var controller: ConversationController? { store.selectedController }
     private var title: String {
+        guard navigation.route == .home else { return navigation.route.title }
         guard let controller, !controller.isDraft else { return "新聊天" }
         return store.summary(for: controller.id)?.title ?? "对话"
     }
-
     var body: some View {
-        HStack(spacing: 8) {
-            if !sidebarVisible {
-                Color.clear.frame(width: 64)
+        HStack(spacing: 0) {
+            HStack(spacing: 5) {
+                Color.clear.frame(width: 89)
+                iconButton("arrow.left", title: "后退", action: navigation.back)
+                    .disabled(!navigation.canGoBack).keyboardShortcut("[", modifiers: .command)
+                iconButton("arrow.right", title: "前进", action: navigation.forward)
+                    .disabled(!navigation.canGoForward).keyboardShortcut("]", modifiers: .command)
                 Button(action: onToggleSidebar) { WorkspaceIcon(.sidebar) }
                     .buttonStyle(WorkspaceIconButtonStyle())
-                    .help("显示侧栏").accessibilityLabel("显示侧栏")
-                    .keyboardShortcut("s", modifiers: [.command, .control])
-            }
-            Text(title).font(.system(size: 13, weight: .medium))
-                .lineLimit(1).truncationMode(.tail).help(title)
-            if let controller, !controller.isDraft {
-                Text(ThreadStore.displayName(for: controller.cwd))
-                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                    .lineLimit(1).help(controller.cwd)
-            }
+                    .help(sidebarVisible ? "收起侧栏" : "显示侧栏")
+                    .accessibilityLabel("切换侧栏").keyboardShortcut("s", modifiers: [.command, .control])
+                Spacer(minLength: 0)
+            }.frame(width: sidebarVisible ? Theme.railWidth + sidebarWidth : 235)
+            Rectangle().fill(Theme.line).frame(width: 1, height: 20)
+            Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                .truncationMode(.tail).padding(.horizontal, 12).help(title)
             Spacer(minLength: 12)
-            if let controller {
-                Menu {
-                    Button("在访达中打开") { NSWorkspace.shared.open(URL(fileURLWithPath: controller.cwd)) }
-                    Button("复制工作目录") { copy(controller.cwd) }
-                } label: {
-                    HStack(spacing: 5) {
-                        WorkspaceIcon(.folder).frame(width: 14, height: 14)
-                        Text("打开").font(.system(size: 12, weight: .medium))
-                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
-                    }.padding(.horizontal, 7).frame(height: 28)
-                }
-                .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain).help("打开工作目录")
-                Menu {
+            Menu {
+                if let controller, navigation.route == .home {
                     Text("\(controller.engine.displayName) 原生会话")
                     Divider()
                     if controller.engine == .codex && !controller.isDraft {
@@ -119,22 +200,78 @@ struct WorkspaceToolbar: View {
                             .disabled(store.takingOverId != nil || controller.showsActivity || controller.isLoadingHistory)
                         Divider()
                     }
+                    Button("在访达中打开目录") { NSWorkspace.shared.open(URL(fileURLWithPath: controller.cwd)) }
+                    Button("复制工作目录") { copy(controller.cwd) }
                     Button("复制会话 ID") { copy(controller.id) }
-                    Button("刷新对话列表") { Task { await store.refresh() } }
-                    if controller.totalCostUSD > 0 {
-                        Text(String(format: "本会话 API 估算：$%.2f", controller.totalCostUSD))
-                    }
-                } label: { WorkspaceIcon(.more).frame(width: 28, height: 28) }
-                    .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
-                    .accessibilityLabel("对话操作").help("对话操作")
-            }
+                    if controller.totalCostUSD > 0 { Text(String(format: "本会话 API 估算：$%.2f", controller.totalCostUSD)) }
+                    Divider()
+                }
+                Button("刷新对话列表") { Task { await store.refresh() } }
+                Button("搜索对话") { navigation.searchPresented = true }
+                Button("设置") { navigation.visit(.settings) }
+            } label: { WorkspaceIcon(.more).frame(width: 28, height: 28) }
+                .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
+                .help("更多操作").accessibilityLabel("更多操作")
+            iconButton("list.bullet.circle", title: "产物、子代理与来源") { navigation.inspectorVisible.toggle() }
+                .background(navigation.inspectorVisible && navigation.route == .home ? Theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 9))
+                .disabled(navigation.route != .home)
+                .keyboardShortcut("i", modifiers: [.command, .option])
+            Rectangle().fill(Theme.line).frame(width: 1, height: 16).padding(.horizontal, 7)
+            iconButton("plus.square", title: "新聊天") { store.newThread(); navigation.visit(.home, threadID: store.selectedId) }
         }
-        .padding(.horizontal, 16).frame(height: Theme.toolbarHeight)
-        .background(WindowDragRegion()).background(Theme.background)
+        .padding(.trailing, 8).frame(height: Theme.toolbarHeight)
+        .foregroundStyle(Theme.textSecondary)
+        .background(WindowDragRegion()).background(Theme.toolbar)
     }
-    private func copy(_ value: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+    private func iconButton(_ icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: icon).font(.system(size: 13, weight: .regular)).frame(width: 28, height: 28) }
+            .buttonStyle(WorkspaceIconButtonStyle()).help(title).accessibilityLabel(title)
+    }
+    private func copy(_ value: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string) }
+}
+
+private struct WorkspaceSearchSheet: View {
+    @Environment(ThreadStore.self) private var store
+    @Environment(WorkspaceNavigation.self) private var navigation
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @FocusState private var focused: Bool
+    private var matches: [ThreadSummary] {
+        store.groups.flatMap(\.threads).filter {
+            query.isEmpty || ($0.title + " " + $0.cwd + " " + $0.engine.displayName).localizedCaseInsensitiveContains(query)
+        }.sorted { $0.updatedAt > $1.updatedAt }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.textSecondary)
+                TextField("搜索对话或项目", text: $query).textFieldStyle(.plain).focused($focused)
+                Button("取消") { dismiss() }.buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+            }.font(.system(size: 15))
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(matches) { thread in
+                        Button {
+                            store.selectedId = thread.id; navigation.visit(.home, threadID: thread.id); dismiss()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(thread.title).lineLimit(1).foregroundStyle(Theme.textPrimary)
+                                    Text(thread.engine.displayName + " · " + ThreadStore.displayPath(for: thread.cwd))
+                                        .font(.system(size: 11)).foregroundStyle(Theme.textTertiary).lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "arrow.up.left").foregroundStyle(Theme.textTertiary)
+                            }.padding(10).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                    if matches.isEmpty { Text("没有找到对话").foregroundStyle(Theme.textSecondary).padding(12) }
+                }
+            }
+        }.padding(20).frame(width: 560, height: 430).background(Theme.background)
+            .onAppear { if NSApp.activationPolicy() != .prohibited { focused = true } }
+            .onExitCommand { dismiss() }
     }
 }
 
@@ -155,7 +292,6 @@ private struct WorkspaceWindowStyle: NSViewRepresentable {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
-
 struct WindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView { DragView() }
     func updateNSView(_ view: DragView, context: Context) {}

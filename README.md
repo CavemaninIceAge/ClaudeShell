@@ -6,7 +6,8 @@ A native macOS workspace for your local **Claude Code and Codex** conversations,
 
 ## Conversations
 
-- A quiet Codex-inspired workspace: searchable project sidebar, engine badges, centered conversation column, Markdown, collapsible thinking/tools, and native composer.
+- A complete Codex-style application shell: persistent navigation rail, back/forward titlebar, searchable conversation sidebar, History, Library, Images, Apps and Settings pages, plus a live outputs/agents/sources inspector.
+- Native microphone dictation inserts text only after user authorization; it never sends a message automatically. Switching pages preserves unsent text and attachments. Library removal never deletes the original file.
 - Choose **Claude** or **Codex** when starting a conversation. Existing conversations keep their engine, so their history and session IDs cannot accidentally be sent to the other CLI.
 - Claude uses its local stream-JSON protocol. Codex uses its official stdio app-server protocol, including streaming replies, tool progress, approvals, stop, and resume.
 - Local Claude and Codex histories appear together. Files and images can be attached to messages.
@@ -36,7 +37,7 @@ Requires macOS 15+, Xcode, XcodeGen, and the CLI for each engine you use. No thi
 
 If the destination app is running, installation stops and preserves it. The old `Claude Shell.app` is left intact during the rename.
 
-Shortcuts: ⌘N new conversation · ⇧⌘N choose a folder · ⏎ send · ⇧⏎ newline · ⌘. stop · ⌘R refresh · ⌃1…⌃9 select Claude account.
+Shortcuts: ⌘K search · ⌘[/⌘] back/forward · ⌃⌘S toggle sidebar · ⌥⌘I inspector · ⌘N new conversation · ⇧⌘N choose a folder · ⏎ send · ⇧⏎ newline · ⌘. stop · ⌘R refresh · ⌃1…⌃9 select Claude account.
 
 ## Layout
 
@@ -47,3 +48,5 @@ App/Sources/UI/       SwiftUI sidebar, composer, approvals, account controls
 App/Resources/web/   offline Markdown transcript renderer
 docs/                protocol and account semantics
 ```
+
+The visual reference is the user-supplied full Codex desktop shell; see [DESIGN.md](DESIGN.md). Cloud Apps marketplace, cloud synchronization and a standalone image-generation service are not emulated. The app uses the tools configured in each native engine, displays truthful availability, and manages local files.
