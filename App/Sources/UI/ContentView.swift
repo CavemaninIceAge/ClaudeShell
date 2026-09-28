@@ -5,15 +5,21 @@ struct ContentView: View {
     @Environment(ThreadStore.self) private var store
     @State private var navigation = WorkspaceNavigation()
     @State private var content = WorkspaceContentStore()
+    @State private var tools = WorkspaceToolsStore()
     @AppStorage("workspaceAppearance") private var appearance = "system"
     var body: some View {
         WorkspaceView()
             .environment(navigation)
             .environment(content)
+            .environment(tools)
             .focusedSceneValue(\.workspaceNavigation, navigation)
             .preferredColorScheme(appearance == "dark" ? .dark : appearance == "light" ? .light : nil)
             .background(WorkspaceWindowStyle())
             .task { content.load(); await store.bootstrap() }
+            .onChange(of: store.selectedController?.cwd, initial: true) { _, cwd in
+                if let cwd { tools.activate(cwd: cwd) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in tools.shutdown() }
     }
 }
 
@@ -23,6 +29,7 @@ struct WorkspaceView: View {
     @Environment(AccountStore.self) private var accounts
     @Environment(WorkspaceNavigation.self) private var navigation
     @Environment(WorkspaceContentStore.self) private var content
+    @Environment(WorkspaceToolsStore.self) private var tools
     @State private var sidebarVisible = true
     @State private var sidebarWidth = Theme.sidebarWidth
     @State private var resizeOrigin: CGFloat?
@@ -44,7 +51,10 @@ struct WorkspaceView: View {
                         page
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .background(Theme.background)
-                        if navigation.route == .home && navigation.inspectorVisible && inlineInspector {
+                        if navigation.route == .home && navigation.toolsVisible && geometry.size.width >= 1400 {
+                            toolsPanel.frame(width: min(620, max(440, geometry.size.width * 0.38)))
+                        }
+                        if navigation.route == .home && !navigation.toolsVisible && navigation.inspectorVisible && inlineInspector {
                             inspector.frame(width: 300).padding(.leading, 8).padding(.trailing, 8)
                                 .padding(.top, 6).frame(maxHeight: .infinity, alignment: .top)
                         }
@@ -55,7 +65,7 @@ struct WorkspaceView: View {
             }
             .background(Theme.rail)
             .overlay(alignment: .topTrailing) {
-                if navigation.route == .home && navigation.inspectorVisible && !inlineInspector {
+                if navigation.route == .home && !navigation.toolsVisible && navigation.inspectorVisible && !inlineInspector {
                     VStack(alignment: .trailing, spacing: 4) {
                         Button { navigation.inspectorVisible = false } label: {
                             Label("关闭详情", systemImage: "xmark")
@@ -66,6 +76,9 @@ struct WorkspaceView: View {
                     }
                     .padding(.top, Theme.toolbarHeight + 8).padding(.trailing, 8)
                 }
+            }
+            .sheet(isPresented: Binding(get: { navigation.toolsVisible && geometry.size.width < 1400 }, set: { if !$0 { navigation.toolsVisible = false } })) {
+                toolsPanel.frame(width: min(920, max(720, geometry.size.width - 60)), height: max(440, min(760, geometry.size.height - 70)))
             }
             .onChange(of: geometry.size.width, initial: true) { _, newWidth in
                 if newWidth < 1240 { navigation.inspectorVisible = false }
@@ -97,22 +110,28 @@ struct WorkspaceView: View {
             }
         }
         .onChange(of: store.selectedController?.items) { _, _ in recordArtifacts() }
+        .sheet(isPresented: Binding(get: { navigation.previewURL != nil }, set: { if !$0 { navigation.previewURL = nil } })) {
+            if let url = navigation.previewURL { WorkspaceFilePreview(url: url) }
+        }
         .sheet(isPresented: Binding(get: { navigation.searchPresented }, set: { navigation.searchPresented = $0 })) {
             WorkspaceSearchSheet()
         }
         .sheet(item: Binding(get: { accounts.loginSession }, set: { if $0 == nil { accounts.loginSession = nil } })) {
             AccountLoginSheet(session: $0)
         }
+        .sheet(item: Binding(get: { accounts.codexLoginSession }, set: { if $0 == nil { accounts.codexLoginSession?.cancel(); accounts.codexLoginSession = nil } })) {
+            CodexLoginSheet(session: $0)
+        }
         .sheet(isPresented: Binding(get: { accounts.addingProvider }, set: { accounts.addingProvider = $0 })) { ProviderAddSheet() }
         .alert("接管未完成", isPresented: Binding(get: { store.takeoverError != nil }, set: { if !$0 { store.takeoverError = nil } })) {
             Button("好") { store.takeoverError = nil }
         } message: { Text(store.takeoverError ?? "") }
         .alert("操作未完成", isPresented: Binding(
-            get: { accounts.lastError != nil || content.lastError != nil },
-            set: { if !$0 { accounts.lastError = nil; content.lastError = nil } }
+            get: { accounts.lastError != nil || content.lastError != nil || store.workspaceError != nil },
+            set: { if !$0 { accounts.lastError = nil; content.lastError = nil; store.workspaceError = nil } }
         )) {
-            Button("好") { accounts.lastError = nil; content.lastError = nil }
-        } message: { Text(accounts.lastError ?? content.lastError ?? "") }
+            Button("好") { accounts.lastError = nil; content.lastError = nil; store.workspaceError = nil }
+        } message: { Text(accounts.lastError ?? content.lastError ?? store.workspaceError ?? "") }
     }
 
     @ViewBuilder private var page: some View {
@@ -132,6 +151,13 @@ struct WorkspaceView: View {
         case .apps: WorkspaceAppsPage()
         case .settings: WorkspaceSettingsPage()
         }
+    }
+    private var toolsPanel: some View {
+        WorkspaceToolsPanel(cwd: store.selectedController?.cwd ?? NSHomeDirectory(), initialTab: navigation.toolsTab,
+                            onClose: { navigation.toolsVisible = false },
+                            onAttachFile: { url in store.selectedController?.attach(urls: [url]) })
+            .environment(tools)
+            .overlay(alignment: .leading) { Rectangle().fill(Theme.line).frame(width: 1) }
     }
     private var inspector: some View {
         WorkspaceInspector()
@@ -200,6 +226,10 @@ struct WorkspaceToolbar: View {
                             .disabled(store.takingOverId != nil || controller.showsActivity || controller.isLoadingHistory)
                         Divider()
                     }
+                    Button("项目文件") { showTools(.files) }
+                    Button("查看代码改动") { showTools(.git) }
+                    Button("运行命令") { showTools(.command) }
+                    Divider()
                     Button("在访达中打开目录") { NSWorkspace.shared.open(URL(fileURLWithPath: controller.cwd)) }
                     Button("复制工作目录") { copy(controller.cwd) }
                     Button("复制会话 ID") { copy(controller.id) }
@@ -212,6 +242,8 @@ struct WorkspaceToolbar: View {
             } label: { WorkspaceIcon(.more).frame(width: 28, height: 28) }
                 .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
                 .help("更多操作").accessibilityLabel("更多操作")
+            iconButton("folder", title: "项目文件") { showTools(.files) }.disabled(navigation.route != .home)
+            iconButton("terminal", title: "命令与输出") { showTools(.command) }.disabled(navigation.route != .home)
             iconButton("list.bullet.circle", title: "产物、子代理与来源") { navigation.inspectorVisible.toggle() }
                 .background(navigation.inspectorVisible && navigation.route == .home ? Theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .disabled(navigation.route != .home)
@@ -227,6 +259,7 @@ struct WorkspaceToolbar: View {
         Button(action: action) { Image(systemName: icon).font(.system(size: 13, weight: .regular)).frame(width: 28, height: 28) }
             .buttonStyle(WorkspaceIconButtonStyle()).help(title).accessibilityLabel(title)
     }
+    private func showTools(_ tab: WorkspaceToolTab) { navigation.toolsTab = tab; navigation.toolsVisible = true }
     private func copy(_ value: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string) }
 }
 
@@ -266,7 +299,15 @@ private struct WorkspaceSearchSheet: View {
                             }.padding(10).contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
-                    if matches.isEmpty { Text("没有找到对话").foregroundStyle(Theme.textSecondary).padding(12) }
+                    ForEach(store.savedProjects.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }, id: \.self) { cwd in
+                        Button {
+                            let id = store.newThread(cwd: cwd); navigation.visit(.home, threadID: id); dismiss()
+                        } label: {
+                            Label("在项目中开始：" + ThreadStore.displayPath(for: cwd), systemImage: "folder")
+                                .font(.system(size: 13)).padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                    if matches.isEmpty && store.savedProjects.isEmpty { Text("没有找到对话").foregroundStyle(Theme.textSecondary).padding(12) }
                 }
             }
         }.padding(20).frame(width: 560, height: 430).background(Theme.background)

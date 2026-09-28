@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -24,6 +25,9 @@ enum WorkspaceRoute: String, CaseIterable, Codable, Sendable {
     private(set) var locations: [Location]
     private(set) var index = 0
     var searchPresented = false
+    var previewURL: URL?
+    var toolsVisible = false
+    var toolsTab: WorkspaceToolTab = .files
     var inspectorVisible: Bool
     var route: WorkspaceRoute { location.route }
     var location: Location { locations[index] }
@@ -53,6 +57,10 @@ enum WorkspaceRoute: String, CaseIterable, Codable, Sendable {
             if updated.threadID == oldID { updated.threadID = newID }
             return updated
         }
+    }
+    func open(_ url: URL) {
+        if url.isFileURL { previewURL = url }
+        else if ["https", "http"].contains(url.scheme?.lowercased() ?? "") { NSWorkspace.shared.open(url) }
     }
     func back() { if canGoBack { index -= 1 } }
     func forward() { if canGoForward { index += 1 } }

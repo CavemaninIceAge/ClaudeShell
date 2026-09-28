@@ -4,6 +4,7 @@ import SwiftUI
 /// Details of the selected native conversation. Content is derived only from its loaded transcript.
 struct WorkspaceInspector: View {
     @Environment(ThreadStore.self) private var threads
+    @Environment(WorkspaceNavigation.self) private var navigation
     @Environment(WorkspaceContentStore.self) private var content
     @State private var addingSource = false
     @State private var sourceAddress = ""
@@ -296,6 +297,6 @@ struct WorkspaceInspector: View {
     private func open(_ url: URL) {
         // Called exclusively by the user's file/source action; rendering never opens or reads targets.
         guard url.isFileURL || WorkspaceConversationArtifacts.httpsURL(url.absoluteString) != nil else { return }
-        if !NSWorkspace.shared.open(url) { actionError = "无法打开此项目，请确认文件仍在原位置或链接可用。" }
+        navigation.open(url)
     }
 }

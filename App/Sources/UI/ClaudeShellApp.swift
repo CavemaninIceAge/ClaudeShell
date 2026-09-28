@@ -69,7 +69,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 所以先把登录面板收了，下一圈 run loop 再退。
     @MainActor static func quit() {
         let store = AccountStore.shared
-        if store.loginSession != nil || store.addingProvider {
+        if store.loginSession != nil || store.codexLoginSession != nil || store.addingProvider {
+            store.codexLoginSession?.cancel()
+            store.codexLoginSession = nil
             store.loginSession?.cancel()
             store.loginSession = nil
             store.addingProvider = false
@@ -93,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ThreadStore.shared.terminateAll()
             // 登录到一半退出：把 claude auth login 收掉，它不会因为 stdin 关了自己退出。
             AccountStore.shared.loginSession?.cancel()
+            AccountStore.shared.codexLoginSession?.cancel()
         }
     }
 }

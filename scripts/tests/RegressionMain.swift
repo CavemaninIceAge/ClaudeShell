@@ -6,8 +6,12 @@ struct RegressionMain {
         do {
             try await AuthFileRegression.run()
             try await AccountsRegression.run()
+            try await AuthenticationSetupRegression.run()
             try await CodexRegression.run()
+            try await NativeInteractionRegression.run()
             try WorkspaceNavigationRegression.run()
+            try WorkspaceSessionRegression.run()
+            try await WorkspaceToolsRegression.run()
             try await WorkspaceContentRegression.run()
             print("PASS — Claudex Shell isolated regression suite")
         } catch {

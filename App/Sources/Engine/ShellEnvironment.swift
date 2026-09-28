@@ -5,7 +5,6 @@ import Foundation
 enum ShellEnvironment {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cachedPATH: String?
-    nonisolated(unsafe) private static var cachedClaude: String?
 
     private static let fallbackPATH = [
         NSHomeDirectory() + "/.local/bin",
@@ -57,19 +56,12 @@ enum ShellEnvironment {
         return env
     }
 
+    static func resetDiscoveryCache() {
+        lock.lock(); cachedPATH = nil; lock.unlock()
+    }
+
     /// 找 `claude` 可执行文件；找不到返回 nil，由调用方提示用户。
     static func claudeExecutable() -> String? {
-        lock.lock()
-        if let cachedClaude { lock.unlock(); return cachedClaude }
-        lock.unlock()
-        let fm = FileManager.default
-        for dir in loginPATH().split(separator: ":") {
-            let candidate = String(dir) + "/claude"
-            if fm.isExecutableFile(atPath: candidate) {
-                lock.lock(); cachedClaude = candidate; lock.unlock()
-                return candidate
-            }
-        }
-        return nil
+        EngineAvailability.executable(for: .claude)
     }
 }

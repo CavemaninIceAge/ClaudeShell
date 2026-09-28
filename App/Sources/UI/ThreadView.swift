@@ -19,8 +19,14 @@ struct ThreadView: View {
                 VStack(spacing: 0) {
                     TranscriptWebView(controller: controller, onDropTargeted: { dropTargeted = $0 })
                     VStack(spacing: 10) {
-                        ForEach(controller.pendingPermissions) { request in
-                            PermissionCard(request: request, controller: controller)
+                        if !controller.pendingPermissions.isEmpty {
+                            ScrollView {
+                                VStack(spacing: 10) {
+                                    ForEach(controller.pendingPermissions) { request in
+                                        PermissionCard(request: request, controller: controller)
+                                    }
+                                }
+                            }.frame(maxHeight: 320)
                         }
                         ComposerView(controller: controller, dropTargeted: dropTargeted)
                     }

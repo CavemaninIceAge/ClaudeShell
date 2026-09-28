@@ -49,6 +49,8 @@ final class ThreadStore {
     private(set) var updateStatus = UpdateStatus.Result(failed: false)
     var updateBannerDismissed = false
     private(set) var threadIdentityChanges: [String: String] = [:]
+    private(set) var savedProjects: [String] = []
+    var workspaceError: String?
     var query = ""
     var takeoverError: String?
     private(set) var takingOverId: String?
@@ -57,15 +59,23 @@ final class ThreadStore {
         didSet {
             TestLog.write("selectedId \(oldValue ?? "nil") -> \(selectedId ?? "nil")")
             if let selectedId { prepareController(for: selectedId) }
+            scheduleWorkspaceSave()
         }
     }
 
+    @ObservationIgnored private var storageDirectory: URL?
+    @ObservationIgnored private var persistenceEnabled = false
+    @ObservationIgnored private var workspaceSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingRestoration: [WorkspaceSessionState.Composer] = []
+    @ObservationIgnored private var restoreSelection: String?
+    @ObservationIgnored private var workspaceFileReadable = true
     @ObservationIgnored private var bootstrapped = false
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var liveTimer: Timer?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
     private var supportDir: URL {
+        if let storageDirectory { return storageDirectory }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base.appendingPathComponent("Claude Shell", isDirectory: true)
     }
@@ -80,11 +90,15 @@ final class ThreadStore {
         var drafts: [ThreadSummary] = []
         var controllers: [ConversationController] = []
         var selectedId: String?
+        var overrides: [String: ThreadOverride] = [:]
     }
 
-    init() {}
+    init(storageDirectory: URL? = nil) { self.storageDirectory = storageDirectory }
 
-    init(snapshot: Snapshot) {
+    init(snapshot: Snapshot, storageDirectory: URL? = nil) {
+        self.storageDirectory = storageDirectory
+        self.persistenceEnabled = storageDirectory != nil
+        self.overrides = snapshot.overrides
         self.records = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.id, $0) })
         self.drafts = Dictionary(uniqueKeysWithValues: snapshot.drafts.map { ($0.id, $0) })
         self.controllers = Dictionary(uniqueKeysWithValues: snapshot.controllers.map { ($0.id, $0) })
@@ -101,7 +115,10 @@ final class ThreadStore {
 
     var groups: [ProjectGroup] {
         // 还没开口的草稿不进列表（Codex 的做法）；发过第一条就立刻出现，不等磁盘扫描。
-        var all: [ThreadSummary] = drafts.values.filter { controllers[$0.id]?.isDraft == false || overrides[$0.id]?.handoff != nil }
+        var all: [ThreadSummary] = drafts.values.filter {
+            overrides[$0.id]?.hidden != true && (controllers[$0.id]?.isDraft == false || overrides[$0.id]?.handoff != nil
+                || controllers[$0.id]?.composerDraft.isEmpty == false || controllers[$0.id]?.attachments.isEmpty == false)
+        }
         for r in records.values where drafts[r.id] == nil {
             let o = overrides[r.id]
             if o?.hidden == true { continue }
@@ -113,7 +130,12 @@ final class ThreadStore {
         if !q.isEmpty {
             all = all.filter { $0.title.lowercased().contains(q) || $0.cwd.lowercased().contains(q) }
         }
-        let grouped = Dictionary(grouping: all, by: \.cwd)
+        all = all.map { value in
+            guard let c = controllers[value.id], c.isDraft, !c.composerDraft.isEmpty, overrides[value.id]?.customTitle == nil else { return value }
+            var value = value; value.title = "草稿 · " + TitleMaker.title(from: c.composerDraft); return value
+        }
+        var grouped = Dictionary(grouping: all, by: \.cwd)
+        if q.isEmpty { for cwd in savedProjects where grouped[cwd] == nil { grouped[cwd] = [] } }
         return grouped.map { cwd, threads in
             ProjectGroup(cwd: cwd, name: Self.displayName(for: cwd),
                          threads: threads.sorted { ($0.isDraft ? 1 : 0, $0.updatedAt) > ($1.isDraft ? 1 : 0, $1.updatedAt) })
@@ -125,7 +147,12 @@ final class ThreadStore {
     }
 
     func summary(for id: String) -> ThreadSummary? {
-        if let d = drafts[id] { return d }
+        if var d = drafts[id] {
+            if let c = controllers[id], c.isDraft, !c.composerDraft.isEmpty, overrides[id]?.customTitle == nil {
+                d.title = "草稿 · " + TitleMaker.title(from: c.composerDraft)
+            }
+            return d
+        }
         guard let r = records[id] else { return nil }
         return ThreadSummary(id: r.id, title: overrides[id]?.customTitle ?? r.title, cwd: r.cwd,
                              createdAt: r.createdAt, updatedAt: r.updatedAt, isDraft: false, liveStatus: live[id], engine: r.engine)
@@ -169,6 +196,8 @@ final class ThreadStore {
         if let data = defaultsData, let saved = try? JSONDecoder.standard.decode(ThreadSettings.self, from: data) {
             defaultSettings = saved
         }
+        restoreLocalWorkspace()
+        // Resume the last local workspace without launching an engine.
         // 一进来就是一个新对话页面（和 Codex 一样）。
         // -testCwd <目录>：起始的新对话直接开在这个目录（scratchpad 里的会话不进侧栏列表），得在任何视图出现之前定下来。
         if selectedId == nil { newThread(cwd: UserDefaults.standard.string(forKey: "testCwd").flatMap { $0.isEmpty ? nil : $0 }) }
@@ -199,7 +228,14 @@ final class ThreadStore {
         liveTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             Task { @MainActor in ThreadStore.shared.refreshLive() }
         }
+        let startupSelection = selectedId
         await refresh()
+        applyRestoredComposers()
+        if let id = restoreSelection, summary(for: id) != nil, overrides[id]?.hidden != true,
+           selectedId == startupSelection, selectedId != id,
+           selectedController?.composerDraft.isEmpty != false, selectedController?.attachments.isEmpty != false { selectedId = id }
+        restoreSelection = nil
+        scheduleWorkspaceSave()
         runTestHooksIfNeeded()
     }
 
@@ -402,9 +438,10 @@ final class ThreadStore {
     @discardableResult
     func newThread(cwd: String? = nil, engine: ConversationEngine? = nil) -> String {
         let chosenEngine = engine ?? defaultSettings.engine
-        let dir = cwd ?? NSHomeDirectory()
+        let dir = cwd ?? selectedController?.cwd ?? NSHomeDirectory()
         // 当前已经是一个还没开口的新对话，就不再堆一个。
-        if let sid = selectedId, let d = drafts[sid], overrides[sid]?.handoff == nil, controllers[sid]?.isDraft ?? true {
+        if let sid = selectedId, let d = drafts[sid], overrides[sid]?.handoff == nil, controllers[sid]?.isDraft ?? true,
+           controllers[sid]?.composerDraft.isEmpty != false, controllers[sid]?.attachments.isEmpty != false {
             if d.engine != chosenEngine { setDraftEngine(sid, engine: chosenEngine) }
             if d.cwd == dir { return sid }
             setDraftCwd(sid, cwd: dir)
@@ -424,8 +461,9 @@ final class ThreadStore {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "在这里开始对话"
-        panel.message = "选择 Claude 的工作目录"
+        panel.message = "选择 Claude 或 Codex 的工作目录"
         if panel.runModal() == .OK, let url = panel.url {
+            rememberProject(url.path)
             return newThread(cwd: url.path)
         }
         return nil
@@ -449,6 +487,7 @@ final class ThreadStore {
         prepareController(for: id)
         controllers[id]?.restoreComposerDraft(text: text, attachments: attachments)
         if let settings { controllers[id]?.settings = settings }
+        scheduleWorkspaceSave()
     }
 
     func setDraftEngine(_ id: String, engine: ConversationEngine) {
@@ -460,12 +499,13 @@ final class ThreadStore {
     }
 
     func prepareController(for id: String) {
-        if controllers[id] != nil { return }
+        if controllers[id] != nil { restorePendingComposer(for: id); return }
         guard let cwd = drafts[id]?.cwd ?? records[id]?.cwd else { return }
         let engine = drafts[id]?.engine ?? records[id]?.engine ?? .claude
         var settings = overrides[id]?.settings ?? defaultSettings
         if settings.engine != engine { settings = ThreadSettings(engine: engine) }
         let c = ConversationController(id: id, cwd: cwd, settings: settings, hasSessionFile: records[id] != nil, sessionPath: records[id]?.path, handoff: overrides[id]?.handoff)
+        c.onComposerChanged = { [weak self] _ in self?.scheduleWorkspaceSave() }
         c.onSessionStarted = { [weak self] controller, oldId in
             guard let self else { return }
             self.controllers[oldId] = nil
@@ -476,7 +516,9 @@ final class ThreadStore {
             }
             if let override = self.overrides.removeValue(forKey: oldId) { self.overrides[controller.id] = override }
             self.saveOverrides()
+            self.pendingRestoration.removeAll { $0.id == oldId }
             self.threadIdentityChanges[oldId] = controller.id
+            self.scheduleWorkspaceSave()
             if let raw = UserDefaults.standard.string(forKey: "workspacePinnedThreads"),
                let pinned = try? JSONDecoder().decode([String].self, from: Data(raw.utf8)), pinned.contains(oldId),
                let data = try? JSONEncoder().encode(pinned.map { $0 == oldId ? controller.id : $0 }),
@@ -504,6 +546,7 @@ final class ThreadStore {
         c.setTerminalStatus(live[id])
         c.terminalDefaultEffort = terminalDefaults.effort
         controllers[id] = c
+        restorePendingComposer(for: id)
     }
 
     func takeoverWithClaude(_ id: String) async {
@@ -554,24 +597,38 @@ final class ThreadStore {
         saveOverrides()
     }
 
+    /// Hiding only changes our index; the original native conversation remains untouched.
     func hide(_ id: String) {
-        if drafts[id] != nil {
-            drafts[id] = nil
-            if overrides[id]?.handoff != nil {
-                var override = overrides[id] ?? ThreadOverride()
-                override.hidden = true
-                overrides[id] = override
-                saveOverrides()
-            }
-        } else {
-            var o = overrides[id] ?? ThreadOverride()
-            o.hidden = true
-            overrides[id] = o
-            saveOverrides()
-        }
+        guard controllers[id]?.showsActivity != true else { return }
+        var o = overrides[id] ?? ThreadOverride()
+        o.hidden = true
+        overrides[id] = o
+        saveOverrides()
+        // Keep unsent drafts recoverable through History > Hidden, including pasted images.
         controllers[id]?.terminate()
-        controllers[id] = nil
+        if drafts[id] == nil, let c = controllers[id], c.composerDraft.isEmpty && c.attachments.isEmpty { controllers[id] = nil }
         if selectedId == id { selectedId = nil; newThread() }
+        persistWorkspaceNow()
+    }
+
+    var hiddenThreads: [ThreadSummary] {
+        let ids = Set(records.keys).union(drafts.keys).filter { overrides[$0]?.hidden == true }
+        return ids.compactMap { summary(for: $0) }.sorted { $0.updatedAt > $1.updatedAt }
+    }
+    func restoreHidden(_ id: String) {
+        guard overrides[id]?.hidden == true else { return }
+        overrides[id]?.hidden = false
+        saveOverrides()
+        scheduleWorkspaceSave()
+    }
+    func rememberProject(_ cwd: String) {
+        let path = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        if !savedProjects.contains(path) { savedProjects.insert(path, at: 0) }
+        scheduleWorkspaceSave()
+    }
+    func forgetProject(_ cwd: String) {
+        savedProjects.removeAll { $0 == cwd }
+        scheduleWorkspaceSave()
     }
 
     func updateSettings(_ id: String, _ settings: ThreadSettings) {
@@ -586,15 +643,76 @@ final class ThreadStore {
             UserDefaults.standard.set(data, forKey: "defaultThreadSettings")
         }
         saveOverrides()
+        scheduleWorkspaceSave()
+    }
+
+    /// Safe to call in isolated tests; reads only this app-owned metadata file.
+    func restoreLocalWorkspace() {
+        do {
+            if let state = try WorkspaceSessionState.load(from: supportDir.appendingPathComponent("workspace-session.json")) {
+                var seen = Set<String>()
+                savedProjects = state.projects.filter { seen.insert($0).inserted }
+                pendingRestoration = state.composers
+                restoreSelection = state.selectedID
+                applyRestoredComposers()
+                if let id = state.selectedID, summary(for: id) != nil, overrides[id]?.hidden != true { selectedId = id }
+            }
+            persistenceEnabled = true
+        } catch {
+            workspaceFileReadable = false
+            workspaceError = "无法恢复上次工作区，原文件已保留：" + error.localizedDescription
+        }
+    }
+    private func applyRestoredComposers() {
+        for entry in pendingRestoration {
+            if records[entry.id] == nil && entry.isDraft {
+                drafts[entry.id] = ThreadSummary(id: entry.id, title: entry.title, cwd: entry.cwd,
+                    createdAt: entry.createdAt, updatedAt: entry.createdAt, isDraft: true, liveStatus: nil, engine: entry.settings.engine)
+            }
+            if summary(for: entry.id) != nil { prepareController(for: entry.id) }
+        }
+    }
+    private func restorePendingComposer(for id: String) {
+        guard let c = controllers[id], let index = pendingRestoration.firstIndex(where: { $0.id == id }) else { return }
+        let entry = pendingRestoration.remove(at: index)
+        // Consume before a just-indexed conversation can be presented. If a controller
+        // already has new user input, the more recent in-memory draft takes precedence.
+        guard c.composerDraft.isEmpty && c.attachments.isEmpty else { return }
+        c.settings = entry.settings
+        c.restoreComposerDraft(text: entry.text, attachments: entry.attachments.map { $0.restore() })
+    }
+    func scheduleWorkspaceSave() {
+        guard persistenceEnabled && workspaceFileReadable else { return }
+        workspaceSaveTask?.cancel()
+        workspaceSaveTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            self?.persistWorkspaceNow()
+        }
+    }
+    func persistWorkspaceNow() {
+        guard persistenceEnabled && workspaceFileReadable else { return }
+        workspaceSaveTask?.cancel()
+        workspaceSaveTask = nil
+        var state = WorkspaceSessionState(selectedID: restoreSelection ?? selectedId, projects: savedProjects)
+        state.composers = pendingRestoration.filter { controllers[$0.id] == nil }
+        for c in controllers.values where c.isDraft || !c.composerDraft.isEmpty || !c.attachments.isEmpty {
+            state.composers.append(.init(id: c.id, cwd: c.cwd, title: summary(for: c.id)?.title ?? "草稿",
+                createdAt: summary(for: c.id)?.createdAt ?? Date(), settings: c.settings, isDraft: c.isDraft,
+                text: c.composerDraft, attachments: c.attachments.map(WorkspaceSessionState.Attachment.init)))
+        }
+        do { try state.save(to: supportDir.appendingPathComponent("workspace-session.json")) }
+        catch { workspaceError = "工作区保存失败：" + error.localizedDescription }
     }
 
     private func saveOverrides() {
+        guard persistenceEnabled else { return }
         if let data = try? JSONEncoder.standard.encode(overrides) {
             try? data.write(to: overridesURL, options: .atomic)
         }
     }
 
     func terminateAll() {
+        persistWorkspaceNow()
         for c in controllers.values { c.terminate(immediately: true) }
     }
 }

@@ -6,10 +6,10 @@ import Foundation
 enum WorkspaceFixtures {
     enum Surface: String, CaseIterable {
         case empty, conversation, richConversation = "rich-conversation"
-        case history, library, images, apps, settings
+        case history, library, images, apps, settings, files, git, command
         var route: WorkspaceRoute {
             switch self {
-            case .empty, .conversation, .richConversation: return .home
+            case .empty, .conversation, .richConversation, .files, .git, .command: return .home
             case .history: return .history
             case .library: return .library
             case .images: return .images
@@ -21,13 +21,14 @@ enum WorkspaceFixtures {
     static let date = Date().addingTimeInterval(-300)
     static let project = "/Preview/Projects/Claudex Shell"
 
-    static func make(_ surface: Surface, assets: [WorkspaceAsset]) -> (ThreadStore, AccountStore, WorkspaceNavigation, WorkspaceContentStore) {
+    static func make(_ surface: Surface, assets: [WorkspaceAsset], projectOverride: String? = nil) -> (ThreadStore, AccountStore, WorkspaceNavigation, WorkspaceContentStore) {
+        let project = projectOverride ?? Self.project
         let selectedID = surface == .empty ? "preview-draft" : "preview-accounts"
         let settings = ThreadSettings(model: "gpt-6-astra", permissionMode: "auto", effort: "high", engine: .codex)
         let items: [TranscriptItem]
         switch surface {
         case .empty: items = []
-        case .conversation, .history, .library, .images, .apps, .settings: items = transcript(assets: assets)
+        case .conversation, .history, .library, .images, .apps, .settings, .files, .git, .command: items = transcript(assets: assets)
         case .richConversation: items = richTranscript
         }
         let controller = ConversationController(snapshot: .init(id: selectedID, cwd: project, settings: settings,

@@ -124,7 +124,8 @@ struct AccountMenuItems: View {
         Divider()
         Button("保存本机登录态（Claude / GLM / Codex）") { Task { await accounts.importLocalAccounts() } }
             .disabled(accounts.busy != nil)
-        let adding = accounts.loginSession != nil || accounts.addingProvider || accounts.busy != nil
+        let adding = accounts.loginSession != nil || accounts.codexLoginSession != nil || accounts.addingProvider || accounts.busy != nil
+        Button("添加 Codex 账号…") { accounts.beginCodexLogin() }.disabled(adding)
         Button("添加 Claude 账号…") { accounts.beginLogin() }.disabled(adding)
         Button("添加 GLM / API 提供方…") { accounts.addingProvider = true }.disabled(adding)
         let removable = accounts.accounts.filter { $0.id != accounts.activeId }
@@ -275,7 +276,7 @@ struct AccountLoginSheet: View {
             Text("添加 Claude 账号")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Theme.textPrimary)
-            Text("已在浏览器打开 Claude 的登录页。用要添加的账号登录后，页面会给一串授权码，贴到下面。\n终端登录态保持不变；登录成功后在 Claudex Shell 内切换到新账号。")
+            Text("点击下方按钮打开官方认证页，用要添加的账号登录，再将授权码粘贴到这里。无需启动 Claude App 或终端；新登录态只保存到 Claudex Shell。")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -289,7 +290,7 @@ struct AccountLoginSheet: View {
                     .textSelection(.enabled)
             }
 
-            TextField("授权码", text: $code)
+            SecureField("授权码", text: $code)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12.5, design: .monospaced))
                 .focused($codeFocused)
@@ -297,8 +298,11 @@ struct AccountLoginSheet: View {
                 .onSubmit(submit)
 
             HStack {
-                Button("重新打开登录页") { session.openBrowser() }
+                Button("打开官方认证页") { session.openBrowser() }
                     .disabled(session.loginURL == nil)
+                Button("复制链接") {
+                    if let url = session.loginURL { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.absoluteString, forType: .string) }
+                }.disabled(session.loginURL == nil)
                 Spacer()
                 Button("取消") { cancel() }
                     .keyboardShortcut(.cancelAction)
@@ -311,6 +315,8 @@ struct AccountLoginSheet: View {
         .padding(20)
         .frame(width: 460)
         .background(Theme.background)
+        .interactiveDismissDisabled(session.phase == .finishing)
+        .onDisappear { session.cancel() }
         .onChange(of: session.phase) { _, phase in
             if phase == .waitingForCode { codeFocused = true }
         }
@@ -348,5 +354,137 @@ struct AccountLoginSheet: View {
     private func cancel() {
         session.cancel()
         accounts.loginSession = nil
+    }
+}
+
+struct CodexLoginSheet: View {
+    let session: CodexLoginSession
+    @Environment(AccountStore.self) private var accounts
+    @State private var method: CodexLoginMethod = .device
+    @State private var apiKey = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("添加 Codex 账号").font(.system(size: 16, weight: .semibold))
+            Text("在这里完成 Codex CLI 的原生登录，无需打开 Codex App 或终端。新登录态仅供 Claudex Shell 使用。")
+                .font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            Picker("登录方式", selection: $method) {
+                ForEach(CodexLoginMethod.allCases) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented).disabled(session.isBusy)
+            if method == .apiKey {
+                SecureField("OpenAI API Key", text: $apiKey).textFieldStyle(.roundedBorder).disabled(session.isBusy)
+                Text("通过标准输入交给本机 Codex；保存到钥匙串。不会加入命令参数或日志。")
+                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+            }
+            status
+            if let code = session.deviceCode {
+                HStack {
+                    Text(code).font(.system(size: 24, weight: .semibold, design: .monospaced)).textSelection(.enabled)
+                    Spacer()
+                    Button("复制设备码") { copy(code) }
+                }
+                Text("仅在你主动发起登录时输入此设备码。完成官方网页授权后，这里会自动保存账号。")
+                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let url = session.loginURL {
+                HStack {
+                    Button("打开官方认证页") { session.openAuthorizationPage() }
+                    Button("复制链接") { copy(url.absoluteString) }
+                }
+            }
+            HStack {
+                Button("取消") { session.cancel(); accounts.codexLoginSession = nil }
+                    .keyboardShortcut(.cancelAction).disabled(session.phase == .finishing)
+                Spacer()
+                Button(session.phase == .ready ? "开始登录" : "重新登录") {
+                    let secret = apiKey; apiKey = ""
+                    session.start(method: method, apiKey: secret)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(session.isBusy || (method == .apiKey && apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24).frame(width: 480).background(Theme.background)
+        .interactiveDismissDisabled(session.phase == .finishing)
+        .onDisappear { session.cancel(); apiKey = "" }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch session.phase {
+        case .ready:
+            Text(method == .device ? "点击开始后获取设备码，再在官方网页完成授权。" : "输入 API Key 后开始登录。")
+                .font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+        case .starting, .waitingForAuthorization, .finishing:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(session.phase == .starting ? "正在准备官方登录…" : session.phase == .finishing ? "正在保存登录态…" : "等待你在官方网页完成授权…")
+                    .font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+            }
+        case .failed(let message):
+            Text(message).font(.system(size: 12.5)).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
+}
+
+/// Embedded setup controls. Discovery happens only on the user's Detect/Save action, never while taking a snapshot.
+struct EngineSetupSection: View {
+    @Environment(ThreadStore.self) private var threads
+    @State private var claudePath = ""
+    @State private var codexPath = ""
+    @State private var statuses: [EngineAvailability.Status] = []
+    @State private var checking = false
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("引擎可执行文件").font(.system(size: 14, weight: .medium))
+            Text("自动查找本机 CLI 和桌面应用内置 CLI，无需运行原应用。可指定路径；留空恢复自动查找。")
+                .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            row(.claude, title: "Claude Code", path: $claudePath)
+            row(.codex, title: "Codex", path: $codexPath)
+            HStack {
+                Button("重新检测") { Task { await refresh(reset: true) } }.disabled(checking)
+                if checking { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            if let failure { Text(failure).font(.system(size: 12)).foregroundStyle(Theme.danger).fixedSize(horizontal: false, vertical: true) }
+        }
+        .onAppear {
+            claudePath = EngineAvailability.configuredPath(for: .claude)
+            codexPath = EngineAvailability.configuredPath(for: .codex)
+        }
+    }
+
+    private func row(_ engine: ConversationEngine, title: String, path: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 13, weight: .medium))
+            HStack(spacing: 8) {
+                TextField("自动查找，或输入可执行文件的完整路径", text: path).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced)).accessibilityLabel(title + " 可执行文件路径")
+                Button("保存") {
+                    do { try EngineAvailability.setConfiguredPath(path.wrappedValue, for: engine); failure = nil; Task { await refresh(reset: false) } }
+                    catch { failure = error.localizedDescription }
+                }.disabled(checking)
+            }
+            if let status = statuses.first(where: { $0.engine == engine }) {
+                Text(status.executablePath.map { "已找到：" + $0 } ?? "未找到可执行文件。请安装对应 CLI，或指定已安装的路径。")
+                    .font(.system(size: 11)).foregroundStyle(status.isAvailable ? Theme.textSecondary : Theme.warn)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func refresh(reset: Bool) async {
+        guard !checking else { return }
+        checking = true
+        statuses = await Task.detached(priority: .utility) {
+            if reset { ShellEnvironment.resetDiscoveryCache() }
+            return EngineAvailability.statuses()
+        }.value
+        await threads.refreshEngineAvailability()
+        checking = false
     }
 }

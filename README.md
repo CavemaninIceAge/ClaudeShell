@@ -50,3 +50,7 @@ docs/                protocol and account semantics
 ```
 
 The visual reference is the user-supplied full Codex desktop shell; see [DESIGN.md](DESIGN.md). Cloud Apps marketplace, cloud synchronization and a standalone image-generation service are not emulated. The app uses the tools configured in each native engine, displays truthful availability, and manages local files.
+
+## Standalone workbench (0.4.0)
+
+Use native Claude Code / Codex sessions without opening either desktop app: in-app Codex device/API-key login, configurable engine paths, project file editing, Git diff review, bounded command execution, local file previews, durable conversation drafts and saved projects, and recoverable hidden conversations. Native CLIs must be installed. See [the workbench guide](docs/standalone-workbench.md) for shortcuts and supported boundaries.

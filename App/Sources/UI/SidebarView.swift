@@ -221,6 +221,11 @@ struct SidebarView: View {
             .contextMenu {
                 Button("新建 Claude 对话") { newThread(cwd: group.cwd, engine: .claude) }
                 Button("新建 Codex 对话") { newThread(cwd: group.cwd, engine: .codex) }
+                Divider()
+                Button(store.savedProjects.contains(group.cwd) ? "取消保存项目" : "保存项目") {
+                    if store.savedProjects.contains(group.cwd) { store.forgetProject(group.cwd) }
+                    else { store.rememberProject(group.cwd) }
+                }
             }
             if expandedProjects.contains(group.id) {
                 ForEach(group.threads) { threadRow($0, nested: true) }
@@ -249,7 +254,7 @@ struct SidebarView: View {
                 }
                 Button("在访达中显示目录") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: thread.cwd)]) }
                 Divider()
-                Button("从列表中移除") { store.hide(thread.id) }
+                Button("隐藏对话（可恢复）") { store.hide(thread.id) }.disabled(store.controllers[thread.id]?.showsActivity == true)
             }
     }
     private func selectThread(_ id: String) {
@@ -264,7 +269,7 @@ struct SidebarView: View {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.prompt = "开始对话"; panel.message = "选择工作目录"
-        if panel.runModal() == .OK, let url = panel.url { newThread(cwd: url.path) }
+        if panel.runModal() == .OK, let url = panel.url { store.rememberProject(url.path); newThread(cwd: url.path) }
     }
     private func togglePin(_ id: String) {
         var ids = pinnedIDs

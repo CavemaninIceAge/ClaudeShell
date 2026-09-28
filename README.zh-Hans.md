@@ -2,6 +2,8 @@
 
 一个同时接入本机 **Claude Code 与 Codex** 的原生 macOS 对话工作台，支持保存 Claude、GLM/API 提供方和 Codex 登录态。
 
+0.4.0 可直接在应用内登录 Codex、查看和编辑项目文件、检查 Git 改动、运行命令，并恢复草稿和项目。日常工作无需打开 Claude / Codex 桌面端；底层仍使用已安装的原生 CLI。[独立工作台使用说明](docs/standalone-workbench.md)。
+
 ## 怎么使用
 
 1. 新建对话，在输入框选择 **Claude / Codex**。已经开始的对话固定使用原来的引擎，避免混用历史。

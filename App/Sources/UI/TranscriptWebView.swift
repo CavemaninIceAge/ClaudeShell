@@ -58,6 +58,7 @@ final class TranscriptWKWebView: WKWebView {
 
 struct TranscriptWebView: NSViewRepresentable {
     @Environment(WorkspaceContentStore.self) private var content
+    @Environment(WorkspaceNavigation.self) private var navigation
     let controller: ConversationController
     var onDropTargeted: (Bool) -> Void = { _ in }   // 文件 / 照片拖过正文时，输入框跟着亮边
 
@@ -175,7 +176,11 @@ struct TranscriptWebView: NSViewRepresentable {
                     sync(items: p.items, working: p.working, status: p.status, effort: p.effort)
                 }
             case "open":
-                if let s = body["url"] as? String, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+                if let path = body["path"] as? String, !path.contains("\0") {
+                    parent.navigation.open(URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: parent.controller.cwd, isDirectory: true)).standardizedFileURL)
+                } else if let s = body["url"] as? String, let url = WorkspaceFileLink.resolve(s, cwd: parent.controller.cwd) {
+                    parent.navigation.open(url)
+                }
             case "copy_response", "response_feedback", "save_response":
                 guard let id = body["id"] as? String,
                       let item = parent.controller.items.first(where: { $0.id == id && $0.kind == .assistant }) else { return }
@@ -207,8 +212,8 @@ struct TranscriptWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
             guard let url = navigationAction.request.url else { return .cancel }
-            if url.isFileURL || url.scheme == "about" { return .allow }
-            NSWorkspace.shared.open(url)
+            if navigationAction.navigationType == .linkActivated { parent.navigation.open(url); return .cancel }
+            if url == Bundle.main.url(forResource: "transcript", withExtension: "html", subdirectory: "web") || url.scheme == "about" { return .allow }
             return .cancel
         }
     }

@@ -25,9 +25,7 @@ final class CodexProcess {
     }
 
     nonisolated static func executable() -> String? {
-        let directories = ShellEnvironment.loginPATH().split(separator: ":").map(String.init)
-            + [NSHomeDirectory() + "/.npm-global/bin", "/Applications/Codex.app/Contents/Resources"]
-        return directories.map { $0 + "/codex" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+        EngineAvailability.executable(for: .codex)
     }
 
     func start(cwd: String, environment: [String: String], executable: String? = nil, arguments: [String]? = nil) throws {
@@ -72,10 +70,28 @@ final class CodexProcess {
 
     func initialize() async throws {
         _ = try await request("initialize", params: .object([
-            "clientInfo": .object(["name": .string("claudex_shell"), "title": .string("Claudex Shell"), "version": .string("0.2.0")]),
+            "clientInfo": .object(["name": .string("claudex_shell"), "title": .string("Claudex Shell"), "version": .string(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.0")]),
             "capabilities": .object(["experimentalApi": .bool(true), "requestAttestation": .bool(false)]),
         ]))
         try write(.object(["method": .string("initialized")]))
+    }
+
+    func listModels() async throws -> [CodexModelOption] {
+        var models: [CodexModelOption] = []
+        var cursor: String?
+        var seen = Set<String>()
+        repeat {
+            try Task.checkCancellation()
+            var params: [String: JSONValue] = ["includeHidden": .bool(false)]
+            if let cursor { params["cursor"] = .string(cursor) }
+            let page = try await request("model/list", params: .object(params), timeout: .seconds(15))
+            for model in page["data"]?.array?.compactMap(CodexModelOption.parse) ?? [] where !models.contains(where: { $0.id == model.id }) {
+                models.append(model)
+            }
+            cursor = page["nextCursor"]?.string
+            if let cursor, !seen.insert(cursor).inserted { throw Failure(message: "Codex 模型列表返回了重复分页标记。") }
+        } while cursor != nil
+        return models
     }
 
     func request(_ method: String, params: JSONValue, timeout: Duration = .seconds(45)) async throws -> JSONValue {

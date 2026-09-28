@@ -371,12 +371,12 @@
     const a = e.target.closest('a[href]');
     if (a) {
       e.preventDefault();
-      post({ type: 'open', url: a.href });
+      post({ type: 'open', url: a.getAttribute('href') || a.href });
       return;
     }
     const att = e.target.closest('.openable[data-path]');
     if (att) {
-      post({ type: 'open', url: 'file://' + encodeURI(att.dataset.path) });
+      post({ type: 'open', path: att.dataset.path });
       return;
     }
     const responseAction = e.target.closest('button[data-response-action]');

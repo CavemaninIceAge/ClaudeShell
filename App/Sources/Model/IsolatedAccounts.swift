@@ -80,7 +80,7 @@ enum CodexAccountOps {
             return CodexAccount(id: "api-" + AppAuthPaths.key(apiKey), email: "Codex API Key", subscriptionType: "API", addedAt: Date())
         }
         guard let tokens = object["tokens"], let access = tokens["access_token"]?.string, !access.isEmpty else {
-            throw AccountOps.Failure(message: "Codex 登录态缺少 access_token，请先在终端运行 codex login")
+            throw AccountOps.Failure(message: "Codex 登录态缺少 access_token，请在本应用中添加 Codex 账号后重试")
         }
         let claims = jwtClaims(tokens["id_token"]?.string ?? access)
         let auth = claims?["https://api.openai.com/auth"]
@@ -116,7 +116,7 @@ enum CodexAccountOps {
            let range = Range(match.range(at: 1), in: topLevel) {
             let store = String(topLevel[range])
             guard store == "file" else {
-                throw AccountOps.Failure(message: "本机 Codex 使用 \(store) 凭据存储。请在 \(url.path) 设置 cli_auth_credentials_store = \"file\"，重新 codex login 后导入；此次没有改写任何登录态。")
+                throw AccountOps.Failure(message: "本机 Codex 使用 \(store) 凭据存储。请直接在本应用中添加 Codex 账号，使用独立登录态；此次没有改写本机凭据存储。")
             }
         }
     }

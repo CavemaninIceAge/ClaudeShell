@@ -133,6 +133,7 @@ final class AccountStore {
     private(set) var switchNote: String?
     private(set) var hasPushBackup = false
     var loginSession: LoginSession?
+    var codexLoginSession: CodexLoginSession?
     var addingProvider = false
     var onSwitched: (@MainActor (ClaudeAccount?) -> Void)?
     @ObservationIgnored private var loaded = false
@@ -217,6 +218,7 @@ final class AccountStore {
         hasPushBackup = AccountPushOps.hasBackup
         isLoggedOut = active == nil && activeProvider == nil
         LoginSession.sweepLeftovers()
+        CodexLoginSession.sweepLeftovers()
     }
     private func readManifest(_ url: URL) -> Data? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -423,7 +425,7 @@ final class AccountStore {
     }
     func prepareCodexEnvironment() async throws -> [String: String] {
         load()
-        guard let account = activeCodex else { throw AccountOps.Failure(message: "请先在账号菜单导入本机 Codex 登录态") }
+        guard let account = activeCodex else { throw AccountOps.Failure(message: "请在账号菜单添加 Codex 账号或导入本机登录态，无需先打开 Codex App") }
         let env = liveEnv
         return try await Task.detached(priority: .userInitiated) { try CodexAccountOps.prepare(account, base: env) }.value
     }
@@ -556,7 +558,8 @@ final class AccountStore {
         return await performProviderSwitch(id)
     }
     func beginLogin() {
-        guard loginSession == nil else { return }
+        load()
+        guard loginSession == nil, codexLoginSession == nil, busy == nil else { return }
         let session = LoginSession()
         session.onFinished = { [weak self] account in
             guard let self else { return }
@@ -565,6 +568,18 @@ final class AccountStore {
         }
         loginSession = session
         session.start()
+    }
+
+    func beginCodexLogin() {
+        load()
+        guard loginSession == nil, codexLoginSession == nil, busy == nil else { return }
+        let session = CodexLoginSession()
+        session.onFinished = { [weak self] account in
+            guard let self else { return }
+            self.mergeCodex(account); self.saveCodex(); self.codexLoginSession = nil
+            Task { await self.switchToCodex(account.id) }
+        }
+        codexLoginSession = session
     }
 }
 
@@ -606,10 +621,13 @@ final class LoginSession: Identifiable {
         self.env = Self.environment(for: dir)
     }
 
-    nonisolated private static func environment(for dir: URL) -> [String: String] {
-        var env = ShellEnvironment.environment()
+    nonisolated static func environment(for dir: URL, base: [String: String]? = nil) -> [String: String] {
+        var env = base ?? ShellEnvironment.environment()
+        for key in Array(env.keys) where key.hasPrefix("ANTHROPIC_") || ClaudeAuthOverrides.routingKeys.contains(key) {
+            env.removeValue(forKey: key)
+        }
         env["CLAUDE_CONFIG_DIR"] = dir.path
-        env.removeValue(forKey: "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = dir.path
         env["BROWSER"] = "/usr/bin/true" // Display the URL; opening a browser requires the explicit button.
         return env
     }
@@ -618,7 +636,11 @@ final class LoginSession: Identifiable {
     static func sweepLeftovers() {
         let base = supportDir
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: base.path) else { return }
-        let stale = names.filter { $0.hasPrefix("login-") }
+        let stale = names.filter { name in
+            guard name.hasPrefix("login-"), UUID(uuidString: String(name.dropFirst("login-".count))) != nil,
+                  let modified = try? base.appendingPathComponent(name).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { return false }
+            return modified < Date().addingTimeInterval(-24 * 60 * 60)
+        }
         guard !stale.isEmpty else { return }
         Task.detached(priority: .utility) {
             for name in stale {
@@ -637,7 +659,7 @@ final class LoginSession: Identifiable {
             return
         }
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try AppAuthPaths.privateDirectory(dir)
         } catch {
             phase = .failed("建不了临时配置目录：\(error.localizedDescription)")
             return
@@ -692,26 +714,25 @@ final class LoginSession: Identifiable {
 
     private func consume(_ raw: String) {
         // 控制序列可能被拆在两个 chunk 里，所以每次都从头剥一遍。
-        rawOutput += raw
+        rawOutput = String((rawOutput + raw).suffix(24_000))
         output = Self.stripControl(rawOutput)
         if loginURL == nil, let url = Self.firstURL(in: output) { loginURL = url }
-        if phase == .starting, output.contains("Paste code") { phase = .waitingForCode }
+        if phase == .starting, loginURL != nil || output.contains("Paste code") { phase = .waitingForCode }
     }
 
     /// 把浏览器页面给的授权码贴回去。
     func submit(code: String) {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let stdinPipe, isRunning else { return }
+        guard !trimmed.isEmpty, !trimmed.contains("\n"), !trimmed.contains("\r"), !trimmed.contains("\0"), let stdinPipe, isRunning else { return }
         phase = .finishing
         stdinPipe.fileHandleForWriting.write(Data((trimmed + "\n").utf8))
     }
 
     private func exited(_ code: Int32) {
         process = nil
-        if cancelled { return }
+        if cancelled { cleanupTemp(); return }
         guard code == 0 else {
-            let tail = output.split(whereSeparator: \.isNewline).suffix(6).joined(separator: "\n")
-            phase = .failed("登录没有完成（claude 退出码 \(code)）" + (tail.isEmpty ? "" : "\n" + tail))
+            phase = .failed("登录没有完成（Claude 退出码 \(code)）。请确认授权已完成；也可取消后重新添加账号。")
             cleanupTemp()
             return
         }
@@ -721,7 +742,7 @@ final class LoginSession: Identifiable {
             let result = await Task.detached(priority: .userInitiated) {
                 Result { try AccountOps.harvestLogin(dir: dir, env: env) }
             }.value
-            guard let self else { return }
+            guard let self, !self.cancelled else { return }
             switch result {
             case .success(let acc): self.onFinished?(acc)
             case .failure(let error): self.phase = .failed(error.localizedDescription)
@@ -731,9 +752,14 @@ final class LoginSession: Identifiable {
 
     func cancel() {
         cancelled = true
-        if let process, process.isRunning { process.terminate() }
-        process = nil
-        cleanupTemp()
+        if let process, process.isRunning {
+            process.terminate()
+            let child = process
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                if child.isRunning { kill(child.processIdentifier, SIGKILL) }
+            }
+        } else { cleanupTemp() }
     }
 
     private func cleanupTemp() {
@@ -749,15 +775,22 @@ final class LoginSession: Identifiable {
     }
 
     /// 去掉 ANSI / OSC 序列和其它控制字符，只留可读文字。
-    static func stripControl(_ s: String) -> String {
+    nonisolated static func stripControl(_ s: String) -> String {
         var out = s.replacingOccurrences(of: "\u{1b}\\][^\u{07}\u{1b}]*(\u{07}|\u{1b}\\\\)", with: "", options: .regularExpression)
         out = out.replacingOccurrences(of: "\u{1b}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
         return String(out.unicodeScalars.filter { $0.value >= 0x20 || $0 == "\n" || $0 == "\t" })
     }
 
-    static func firstURL(in text: String) -> URL? {
-        guard let range = text.range(of: "https://[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+", options: .regularExpression)
-        else { return nil }
-        return URL(string: String(text[range]))
+    nonisolated static func firstURL(in text: String) -> URL? {
+        guard let regex = try? NSRegularExpression(pattern: #"https://[^\s<>\"]+"#) else { return nil }
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text),
+                  let parts = URLComponents(string: String(text[range]).trimmingCharacters(in: CharacterSet(charactersIn: ").,;"))),
+                  ["claude.ai", "console.anthropic.com", "platform.claude.com", "auth.anthropic.com"].contains(parts.host ?? ""),
+                  parts.user == nil, parts.password == nil, parts.port == nil || parts.port == 443,
+                  parts.path.contains("auth") else { continue }
+            return parts.url
+        }
+        return nil
     }
 }

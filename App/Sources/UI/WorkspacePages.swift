@@ -13,10 +13,12 @@ struct WorkspaceHistoryPage: View {
     @State private var renaming: ThreadSummary?
     @State private var renameText = ""
     @State private var hiding: ThreadSummary?
+    @State private var showHidden = false
 
     private var threads: [ThreadSummary] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return store.groups.flatMap(\.threads).filter {
+        let source = showHidden ? store.hiddenThreads : store.groups.flatMap(\.threads)
+        return source.filter {
             (engine == "all" || $0.engine.rawValue == engine) &&
             (needle.isEmpty || $0.title.localizedCaseInsensitiveContains(needle) || $0.cwd.localizedCaseInsensitiveContains(needle))
         }.sorted { $0.updatedAt > $1.updatedAt }
@@ -49,6 +51,7 @@ struct WorkspaceHistoryPage: View {
             }
             HStack(spacing: 12) {
                 WorkspacePageSearch(text: $query, placeholder: "搜索对话或项目")
+                Toggle("已隐藏", isOn: $showHidden).toggleStyle(.button)
                 Picker("引擎", selection: $engine) {
                     Text("所有引擎").tag("all")
                     Text("Claude").tag("claude")
@@ -84,12 +87,13 @@ struct WorkspaceHistoryPage: View {
         }
         .confirmationDialog("隐藏这个对话？", isPresented: Binding(get: { hiding != nil }, set: { if !$0 { hiding = nil } }), titleVisibility: .visible) {
             Button("隐藏对话") { if let thread = hiding { store.hide(thread.id) }; hiding = nil }
-        } message: { Text("将从 Claudex Shell 列表中隐藏，原生会话文件会保留。") }
+        } message: { Text("将从 Claudex Shell 列表中隐藏，原生会话文件会保留，可在“已隐藏”中恢复。") }
     }
 
     private func historyRow(_ thread: ThreadSummary) -> some View {
         HStack(spacing: 12) {
             Button {
+                if showHidden { store.restoreHidden(thread.id) }
                 store.selectedId = thread.id
                 navigation.visit(.home, threadID: thread.id)
             } label: {
@@ -107,7 +111,9 @@ struct WorkspaceHistoryPage: View {
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
             Menu {
-                Button("打开对话") { store.selectedId = thread.id; navigation.visit(.home, threadID: thread.id) }
+                Button(showHidden ? "恢复并打开对话" : "打开对话") {
+                    if showHidden { store.restoreHidden(thread.id) }; store.selectedId = thread.id; navigation.visit(.home, threadID: thread.id)
+                }
                 Button("重命名…") { renaming = thread; renameText = thread.title }
                 if thread.engine == .codex {
                     Button("用 Claude 接管") {
@@ -115,8 +121,8 @@ struct WorkspaceHistoryPage: View {
                     }.disabled(store.takingOverId != nil)
                 }
                 Divider()
-                Button("隐藏对话…") { hiding = thread }
-                    .disabled(store.controllers[thread.id]?.isWorking == true)
+                if showHidden { Button("恢复到列表") { store.restoreHidden(thread.id) } }
+                else { Button("隐藏对话…") { hiding = thread }.disabled(store.controllers[thread.id]?.showsActivity == true) }
             } label: { Image(systemName: "ellipsis").frame(width: 20, height: 24) }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .accessibilityLabel("\(thread.title) 的选项")
@@ -204,10 +210,11 @@ struct WorkspaceLibraryPage: View {
     }
 
     private func open(_ asset: WorkspaceAsset) {
-        guard FileManager.default.fileExists(atPath: asset.url.path), NSWorkspace.shared.open(asset.url) else {
+        guard FileManager.default.fileExists(atPath: asset.url.path) else {
             failure = "文件可能已移动或删除：\(asset.name)。你可以从资料库移除记录，再添加新的文件位置。"
             return
         }
+        navigation.open(asset.url)
     }
 }
 
@@ -242,7 +249,7 @@ struct WorkspaceImagesPage: View {
                     ForEach(images) { asset in
                         VStack(alignment: .leading, spacing: 9) {
                             Button {
-                                if !NSWorkspace.shared.open(asset.url) { failure = "无法打开 \(asset.name)，文件可能已移动或删除。" }
+                                navigation.open(asset.url)
                             } label: { WorkspaceAssetThumbnail(url: asset.url).frame(height: 180).frame(maxWidth: .infinity) }
                                 .buttonStyle(.plain)
                                 .contextMenu {
@@ -324,6 +331,7 @@ struct WorkspaceAppsPage: View {
                 WorkspacePageSeparator()
                 engineRow(.claude, name: "Claude Code", subtitle: "使用原生 Claude Code 会话，并支持 GLM / API 提供方。", missing: store.claudeMissing)
             }
+            EngineSetupSection()
             WorkspacePageSection("已保存的账号") {
                 if accounts.accounts.isEmpty && accounts.codexAccounts.isEmpty && accounts.providers.isEmpty {
                     Text("尚未保存账号。可以导入本机登录态，或添加 Claude / API 账号。")
@@ -351,14 +359,15 @@ struct WorkspaceAppsPage: View {
                         .buttonStyle(WorkspacePageButtonStyle()).disabled(accounts.busy != nil)
                     Menu("添加账号") {
                         Button("Claude 账号…") { accounts.beginLogin() }
+                        Button("Codex / ChatGPT 账号…") { accounts.beginCodexLogin() }
                         Button("GLM / API 提供方…") { accounts.addingProvider = true }
                     }.menuStyle(.borderlessButton).fixedSize()
-                        .disabled(accounts.busy != nil || accounts.loginSession != nil || accounts.addingProvider)
+                        .disabled(accounts.busy != nil || accounts.loginSession != nil || accounts.codexLoginSession != nil || accounts.addingProvider)
                 }.padding(.top, 10)
                 if let note = accounts.switchNote { Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 8) }
             }
             WorkspacePageSection("更多应用与工具") {
-                Text("工具和 MCP 连接沿用所选引擎的本机配置。ChatGPT 云端应用目录与授权不由本机 CLI 提供，无法在这里直接复制连接。")
+                Text("对话使用原生引擎的内置工具与项目配置。已保存账号使用隔离环境；全局 MCP、插件及云端应用的授权不会自动复制。")
                     .font(.system(size: 13)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
                 Button("在对话中使用已配置的工具") {
                     let id = store.newThread()

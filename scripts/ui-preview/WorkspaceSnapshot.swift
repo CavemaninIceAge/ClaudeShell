@@ -43,6 +43,9 @@ struct WorkspaceSnapshot {
                                 Variant(surface: .richConversation, width: 880, height: 560, dark: true)] {
                     results.append(try await render(variant, assets: fixtureAssets, output: output))
                 }
+                for surface in [WorkspaceFixtures.Surface.files, .git, .command] {
+                    results.append(try await render(Variant(surface: surface, width: 1566, height: 895, dark: surface == .command), assets: fixtureAssets, output: output))
+                }
                 let interaction = try await verifyDraftNavigation(assets: fixtureAssets)
                 let metadata: [String: Any] = [
                     "interaction": interaction,
@@ -68,12 +71,40 @@ struct WorkspaceSnapshot {
     @MainActor static func render(_ variant: Variant, assets: [WorkspaceAsset], output: URL) async throws -> [String: Any] {
         let app = NSApplication.shared
         app.appearance = NSAppearance(named: variant.dark ? .darkAqua : .aqua)
-        let (store, accounts, navigation, content) = WorkspaceFixtures.make(variant.surface, assets: assets)
+        let isTools = [WorkspaceFixtures.Surface.files, .git, .command].contains(variant.surface)
+        let toolRoot = output.appendingPathComponent("synthetic-workspace", isDirectory: true)
+        if isTools { try makeToolProject(toolRoot) }
+        let (store, accounts, navigation, content) = WorkspaceFixtures.make(variant.surface, assets: assets, projectOverride: isTools ? toolRoot.path : nil)
+        let tools = WorkspaceToolsStore(environmentProvider: { ["PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"] })
+        defer { tools.shutdown() }
+        if isTools {
+            navigation.toolsVisible = true
+            navigation.toolsTab = variant.surface == .files ? .files : variant.surface == .git ? .git : .command
+            let session = tools.activate(cwd: toolRoot.path)
+            if variant.surface == .files {
+                session.files.loadDirectory(); session.files.open("README.md")
+                for _ in 0..<100 where !session.files.loading.isEmpty { try await Task.sleep(for: .milliseconds(30)) }
+                guard session.files.selectedDocument != nil else { throw Failure(description: "File fixture failed to load") }
+            } else if variant.surface == .git {
+                session.git.refresh()
+                for _ in 0..<100 where session.git.isLoading { try await Task.sleep(for: .milliseconds(30)) }
+                guard let entry = session.git.entries.first(where: { $0.path == "README.md" }) else { throw Failure(description: "Git fixture failed to index") }
+                session.git.select(entry)
+                for _ in 0..<100 where session.git.isLoadingDiff { try await Task.sleep(for: .milliseconds(30)) }
+                guard !session.git.diff.isEmpty else { throw Failure(description: "Git fixture failed to render diff") }
+            } else {
+                session.command.script = "printf '%s\\n' 'SAMPLE — native project build passed'"
+                session.command.start()
+                for _ in 0..<100 where session.command.isRunning { try await Task.sleep(for: .milliseconds(30)) }
+                guard session.command.output.contains("SAMPLE") else { throw Failure(description: "Command fixture failed") }
+            }
+        }
         let root = WorkspaceView()
             .environment(store)
             .environment(accounts)
             .environment(navigation)
             .environment(content)
+            .environment(tools)
             .preferredColorScheme(variant.dark ? .dark : .light)
             .frame(width: CGFloat(variant.width), height: CGFloat(variant.height))
         let host = NSHostingView(rootView: root)
@@ -158,11 +189,28 @@ struct WorkspaceSnapshot {
                 "nativeSubviews": descendants(of: host).count]
     }
 
+    @MainActor static func makeToolProject(_ root: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: root.path) { return }
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let readme = root.appendingPathComponent("README.md")
+        try "# SAMPLE workspace\n\nOriginal project notes.\n".write(to: readme, atomically: true, encoding: .utf8)
+        func git(_ arguments: [String]) throws {
+            let result = try WorkspaceGitIO.run(arguments, root: root.path, process: WorkspaceProcess())
+            guard result.exitCode == 0 else { throw Failure(description: "Synthetic Git setup: " + result.output) }
+        }
+        try git(["-c", "init.defaultBranch=preview", "init"])
+        try git(["add", "README.md"])
+        try git(["-c", "user.name=Sample", "-c", "user.email=sample@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "Synthetic UI fixture"])
+        try "# SAMPLE workspace\n\nBuild, review, and continue the project here.\n\n- Native Claude Code / Codex conversations\n- File editing and Git review\n- Commands and output in the same window\n".write(to: readme, atomically: true, encoding: .utf8)
+        try "SAMPLE=1\n".write(to: root.appendingPathComponent("example.env"), atomically: true, encoding: .utf8)
+    }
+
     /// Exercise real route changes in an unordered host, without clicks or global input.
     @MainActor static func verifyDraftNavigation(assets: [WorkspaceAsset]) async throws -> [String: Any] {
         let (store, accounts, navigation, content) = WorkspaceFixtures.make(.empty, assets: assets)
         guard let controller = store.selectedController else { throw Failure(description: "Missing draft fixture") }
-        let root = WorkspaceView().environment(store).environment(accounts).environment(navigation).environment(content)
+        let root = WorkspaceView().environment(store).environment(accounts).environment(navigation).environment(content).environment(WorkspaceToolsStore())
             .frame(width: 1200, height: 800)
         let host = NSHostingView(rootView: root)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
