@@ -1,15 +1,16 @@
 import AppKit
 import Foundation
 
-/// Synthetic, non-sensitive view data. No engine, shell, session file, or credential store is involved.
+/// In-memory view fixtures. No engine, shell, session file, or credential store is involved.
+/// The reference surface additionally reads only the screenshot attachment explicitly supplied by its caller.
 @MainActor
 enum WorkspaceFixtures {
     enum Surface: String, CaseIterable {
-        case empty, conversation, richConversation = "rich-conversation"
+        case empty, conversation, richConversation = "rich-conversation", referenceConversation = "reference-conversation"
         case history, library, images, apps, settings, files, git, command
         var route: WorkspaceRoute {
             switch self {
-            case .empty, .conversation, .richConversation, .files, .git, .command: return .home
+            case .empty, .conversation, .richConversation, .referenceConversation, .files, .git, .command: return .home
             case .history: return .history
             case .library: return .library
             case .images: return .images
@@ -23,18 +24,28 @@ enum WorkspaceFixtures {
 
     static func make(_ surface: Surface, assets: [WorkspaceAsset], projectOverride: String? = nil) -> (ThreadStore, AccountStore, WorkspaceNavigation, WorkspaceContentStore) {
         let project = projectOverride ?? Self.project
-        let selectedID = surface == .empty ? "preview-draft" : "preview-accounts"
-        let settings = ThreadSettings(model: "gpt-6-astra", permissionMode: "auto", effort: "high", engine: .codex)
+        let isReference = surface == .referenceConversation
+        let selectedID = surface == .empty ? "preview-draft" : (isReference ? "preview-reference" : "preview-accounts")
+        let settings = ThreadSettings(model: "gpt-6-astra", permissionMode: "auto", effort: isReference ? "ultra" : "high", engine: .codex)
         let items: [TranscriptItem]
         switch surface {
         case .empty: items = []
         case .conversation, .history, .library, .images, .apps, .settings, .files, .git, .command: items = transcript(assets: assets)
         case .richConversation: items = richTranscript
+        case .referenceConversation: items = referenceTranscript
         }
         let controller = ConversationController(snapshot: .init(id: selectedID, cwd: project, settings: settings,
             items: items, model: "gpt-6-astra"))
+        if isReference {
+            controller.composerDraft = "这些东西为什么你没有复刻，我要的是整个的codex，明白么？"
+            // The caller explicitly supplies the user's reference attachment. No private files are discovered.
+            if let path = ProcessInfo.processInfo.environment["CLAUDEX_REFERENCE_ATTACHMENT"],
+               FileManager.default.isReadableFile(atPath: path) {
+                controller.attach(urls: [URL(fileURLWithPath: path)])
+            }
+        }
         UserDefaults.standard.set("[\"preview-pin-1\",\"preview-pin-2\",\"preview-pin-3\",\"preview-pin-4\",\"preview-pin-5\",\"preview-pin-6\"]", forKey: "workspacePinnedThreads")
-        let history: [(String, String, String, ConversationEngine)] = [
+        let history: [(String, String, String, ConversationEngine)] = isReference ? referenceHistory(project: project) : [
             ("preview-accounts", "让账号切换只作用于当前应用", project, .codex),
             ("preview-interface", "调整侧栏和对话输入框的布局", project, .claude),
             ("preview-handoff", "接管 Codex 对话继续实现", project, .claude),
@@ -67,8 +78,74 @@ enum WorkspaceFixtures {
                                                    codexAccounts: [codex], activeCodexId: codex.id))
         let navigation = WorkspaceNavigation(route: surface.route, threadID: surface.route == .home ? selectedID : nil,
                                               inspectorVisible: surface != .empty)
-        let content = WorkspaceContentStore(snapshot: assets)
+        let content = WorkspaceContentStore(snapshot: isReference ? [] : assets)
         return (store, accounts, navigation, content)
+    }
+
+    /// Reference-only reconstruction of the screenshot supplied by the user.
+    /// These messages, timings and completed tools are visual fixtures, not claims about a run.
+    /// Fragment links preserve the screenshot's link layout without opening files or remote services.
+    static var referenceTranscript: [TranscriptItem] {
+        let firstDuration = 31 * 60 + 4
+        let secondDuration = 2 * 60 + 24
+        var firstTools = [
+            referenceTool(id: "reference-app-tools", name: "ChatGPT App Tools", duration: firstDuration),
+            referenceTool(id: "reference-web-search", name: "Web search", duration: firstDuration),
+        ]
+        for index in 1...5 {
+            let id = "reference-agent-\(index)"
+            firstTools.append(Block(id: id, kind: .tool, tool: ToolCall(id: id, name: "collabAgentToolCall",
+                input: .object(["tool": .string("spawnAgent"), "receiverThreadIds": .array([.string(id)]),
+                                "description": .string("截图中的示例子代理 \(index)"),
+                                "agentsStates": .object([id: .string("completed")])]),
+                result: "仅用于复现用户提供截图；没有启动子代理。", done: true,
+                startedAt: date.addingTimeInterval(-Double(firstDuration)), endedAt: date), done: true))
+        }
+        firstTools.append(Block(id: "reference-first-answer", kind: .text, text: """
+        已完成 **Claudex Shell 0.2.1**：侧栏、标题栏、输入框、对话排版和浅深色主题均按本机 Codex 重做。10 张界面截图、回归测试及 Release 构建通过；尚未验证逐像素一致。
+
+        [浅色预览](#reference-light-preview) · [深色预览](#reference-dark-preview) · [安装包](#reference-package)
+
+        代码已提交 `8d43d89`。是否确认推送至 [ClaudeShell 仓库](#reference-repository)，并安装、启动新版？
+
+        自动审批拒绝了推送，要求确认具体代码与目标仓库；启动窗口也需要遵守你 AGENTS.md 的单独授权要求。目前尚未推送或重启。
+        """, done: true))
+        return [
+            TranscriptItem(id: "reference-first-assistant", kind: .assistant, blocks: firstTools,
+                timestamp: date, meta: TurnMeta(durationMs: firstDuration * 1000, costUSD: nil)),
+            TranscriptItem(id: "reference-user-approval", kind: .user, text: "同意推送与重启",
+                timestamp: date.addingTimeInterval(1)),
+            TranscriptItem(id: "reference-second-assistant", kind: .assistant, blocks: [
+                referenceTool(id: "reference-install-result", name: "ChatGPT App Tools", duration: secondDuration),
+                Block(id: "reference-second-answer", kind: .text, text: """
+                已完成：
+
+                - 已推送至 GitHub `main`，提交 [`8d43d89`](#reference-commit)。
+                - 已安装并启动 **Claudex Shell 0.2.1（构建 3）**，运行正常。
+                - 旧版已备份，现在打开的是新版界面。
+                """, done: true),
+            ], timestamp: date.addingTimeInterval(Double(secondDuration + 1)),
+               meta: TurnMeta(durationMs: secondDuration * 1000, costUSD: nil)),
+        ]
+    }
+
+    private static func referenceTool(id: String, name: String, duration: Int) -> Block {
+        Block(id: id, kind: .tool, tool: ToolCall(id: id, name: name,
+            input: .object(["description": .string("用户截图的离屏视觉参考")]),
+            result: "仅用于复现用户提供截图；没有执行此工具。", done: true,
+            startedAt: date.addingTimeInterval(-Double(duration)), endedAt: date), done: true)
+    }
+
+    private static func referenceHistory(project: String) -> [(String, String, String, ConversationEngine)] {
+        let supplied: [String]? = ProcessInfo.processInfo.environment["CLAUDEX_REFERENCE_TITLES"]
+            .flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+        let defaults = ["整理项目提醒与任务", "升级 Claudex Shell 多账号与对话", "迁移历史会话", "分析产品数据", "查找项目术语", "整理调研笔记", "核实公开资料", "解释统计指标", "构建移动客户端", "Clarify task request", "准备访谈提纲", "查询地点资料", "翻译项目文档", "解释术语含义", "Recent Voice Chat Topic", "比较技术方案", "解释参数含义", "整理上线流程", "解释.env文件", "https://example.invalid/reference", "AI研究", "数据重整", "更多固定对话 1", "更多固定对话 2"]
+        return defaults.enumerated().map { index, fallback in
+            let id = index == 1 ? "preview-reference" : index >= 18 ? "preview-pin-\(index - 17)" : "reference-history-\(index)"
+            let title = supplied.flatMap { index < $0.count ? $0[index] : nil } ?? fallback
+            return (id, title, project, index == 2 ? .claude : .codex)
+        }
     }
 
     static func transcript(assets: [WorkspaceAsset]) -> [TranscriptItem] {

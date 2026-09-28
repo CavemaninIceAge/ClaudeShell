@@ -76,7 +76,7 @@ a:hover { text-decoration-color: var(--fg); }
 #root {
   max-width: 768px;
   margin: 0 auto;
-  padding: 20px 16px 12px;
+  padding: 32.5px 16px 12px;
 }
 
 /* 图标：SF Symbols 导出的蒙版（scripts/export-symbols.swift），用 currentColor 上色，和原生侧同一套。 */
@@ -140,7 +140,7 @@ a:hover { text-decoration-color: var(--fg); }
 .text > :last-child { margin-bottom: 0; }
 .text { --markdown-space: 3.5px; overflow-wrap: anywhere; }
 .text p { margin: 0 0 3.5px; }
-.text > p:not(:first-child) { margin-top: 7px; }
+.text > p:not(:first-child) { margin-top: 15px; }
 .text > p + p { margin-block: 14px; }
 .text h1, .text h2, .text h3, .text h4 { font-weight: 600; }
 .text h1 { margin: 14px 0 7px; font-size: 1.5em; line-height: 28px; }
@@ -276,13 +276,19 @@ body { caret-color: var(--fg); }
 }
 
 /* Complete-shell message controls, matching the supplied Work/Codex reference. */
-.turn-activity { margin-bottom: 8px; }
-.turn-activity > summary { display: flex; width: 100%; padding: 8px 0; border-bottom: 1px solid var(--line); color: var(--fg-3); font-size: 13px; }
+.turn-activity { margin-bottom: 2.5px; }
+.turn-activity > summary { display: flex; width: 100%; padding: 8px 0; border-bottom: 1px solid var(--line); color: var(--fg-3); font-size: 14px; font-weight: 400; }
 .turn-activity-body { padding: 12px 0; display: flex; flex-direction: column; gap: 8px; }
-.response-actions { display: flex; align-items: center; gap: 2px; margin-top: 8px; }
+.response-actions { display: flex; align-items: center; gap: 2px; margin-top: -1px; }
 .response-actions button { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--fg-3); cursor: default; }
 .response-actions button:hover, .response-actions button[aria-pressed="true"] { background: var(--ghost-hover); color: var(--fg); }
 .response-actions button:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .response-actions svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 body.response-focused .item { display: none; }
 body.response-focused .item.focused-response { display: flex; }
+
+/* Previous turns retain their rhythm, while actions appear on hover or keyboard focus. */
+.item.user + .item.assistant { margin-top: 24px; }
+.item.assistant:has(~ .item.user) .response-actions { margin-top: -10px; opacity: 0; }
+.item.assistant:has(~ .item.user):hover .response-actions,
+.item.assistant:has(~ .item.user):focus-within .response-actions { opacity: 1; }

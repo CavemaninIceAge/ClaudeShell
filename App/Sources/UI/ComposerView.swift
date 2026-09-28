@@ -35,15 +35,17 @@ struct ComposerView: View {
         liveInTerminal ? "发送到终端中正在进行的对话…" : (controller.handoff?.isPending == true ? "告诉 Claude 接下来做什么…" : "描述任务、提问，或添加文件…")
     }
     private var modelTitle: String {
-        if isCodex, let model = controller.codexModels.first(where: { $0.id == effective.modelId }) { return model.name }
-        return effective.modelName ?? controller.engine.displayName
+        if isCodex, let model = controller.codexModels.first(where: { $0.id == effective.modelId }) {
+            return ComposerPresentation.modelName(model.name.isEmpty ? model.id : model.name)
+        }
+        return ComposerPresentation.modelName(effective.modelName ?? controller.engine.displayName)
     }
     private var displayedEffort: String {
-        if let effort = effective.effort { return effort }
+        if let effort = effective.effort { return ComposerPresentation.effortName(effort) }
         if isCodex {
             let model = controller.codexModels.first { $0.id == effective.modelId }
                 ?? controller.codexModels.first { $0.isDefault }
-            if let effort = model?.defaultEffort { return effort }
+            if let effort = model?.defaultEffort { return ComposerPresentation.effortName(effort) }
         }
         return "默认"
     }
@@ -60,7 +62,7 @@ struct ComposerView: View {
         if isCodex {
             let model = controller.codexModels.first { $0.id == controller.settings.model }
                 ?? controller.codexModels.first { $0.isDefault }
-            return [("", "默认强度")] + (model?.efforts ?? []).map { ($0, $0) }
+            return [("", "默认强度")] + (model?.efforts ?? []).map { ($0, ComposerPresentation.effortName($0)) }
         }
         return EffortOption.all.map { option in
             guard option.id.isEmpty, let effort = store.terminalDefaults.effort else { return option }
@@ -123,7 +125,6 @@ struct ComposerView: View {
                         .strokeBorder(Theme.textPrimary, lineWidth: 1.5)
                 }
             }
-            if !controller.isDraft { contextRow }
         }
         .alert("指定模型", isPresented: $editingModel) {
             TextField("模型 ID", text: $customModel)
@@ -154,27 +155,15 @@ struct ComposerView: View {
         .padding(.horizontal, 4)
     }
 
-    /// Codex's normal composer surface (forced-colors rules intentionally excluded).
-    @ViewBuilder private var composerSurface: some View {
-        if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Theme.composerFill.shadow(.inner(color: .white.opacity(0.2), radius: 1)))
-        } else {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Theme.composerFill)
-                .background {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .fill(Color.black.opacity(6.0 / 255))
-                        .padding(-8)
-                        .blur(radius: 40)
-                        .offset(y: 4)
-                }
-                .shadow(color: .black.opacity(10.0 / 255), radius: 4, x: 0, y: 2)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.black.opacity(10.0 / 255), lineWidth: 1)
-                }
-        }
+    /// A single fine edge and a soft offset shadow, without a second rounded halo.
+    private var composerSurface: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(Theme.composerFill)
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.12 : 0.035), radius: 8, x: 0, y: 2)
     }
 
     private var modelMenu: some View {
@@ -193,8 +182,8 @@ struct ComposerView: View {
                 Button("使用 Codex 默认模型") { updateModel("") }
                 ForEach(controller.codexModels, id: \.id) { model in
                     Button { updateModel(model.id) } label: {
-                        if model.id == controller.settings.model { Label(model.name, systemImage: "checkmark") }
-                        else { Text(model.name) }
+                        if model.id == controller.settings.model { Label(ComposerPresentation.modelName(model.name.isEmpty ? model.id : model.name), systemImage: "checkmark") }
+                        else { Text(ComposerPresentation.modelName(model.name.isEmpty ? model.id : model.name)) }
                     }
                 }
             } else {
@@ -220,7 +209,9 @@ struct ComposerView: View {
                 }
             }
         } label: {
-            ComposerControlLabel(title: modelTitle, secondary: displayedEffort, chevron: true)
+            ComposerControlLabel(title: modelTitle, secondary: displayedEffort, chevron: true,
+                                 foreground: Theme.textPrimary,
+                                 secondaryForeground: displayedEffort == "默认" ? Theme.textTertiary : Theme.dynamic("#A45BFF", "#BD8EFF"))
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -257,7 +248,7 @@ struct ComposerView: View {
                 dictation.begin(localeIdentifier: dictationLocale)
             }
         } label: {
-            ComposerControlLabel(icon: dictation.isActive ? "stop.circle" : "mic", title: nil)
+            ComposerControlLabel(icon: dictation.isActive ? "stop.circle" : "mic", title: nil, foreground: Theme.textPrimary)
                 .background(RoundedRectangle(cornerRadius: 7).fill(dictation.isRecording ? Theme.sendFill.opacity(0.1) : .clear))
         }
         .buttonStyle(.plain)
@@ -329,7 +320,7 @@ struct ComposerView: View {
             panel.prompt = "添加"; panel.message = "选择要附加的文件、照片或目录"
             if panel.runModal() == .OK { controller.attach(urls: panel.urls) }
         } label: {
-            ComposerControlLabel(icon: "plus", title: nil, chevron: false)
+            ComposerControlLabel(icon: "plus", title: nil, chevron: false, foreground: Theme.textPrimary)
         }
         .buttonStyle(.plain)
         .help("添加文件、照片或目录（支持拖放和 ⌘V）")
@@ -344,7 +335,7 @@ struct ComposerView: View {
             panel.directoryURL = URL(fileURLWithPath: controller.cwd); panel.prompt = "选择工作目录"
             if panel.runModal() == .OK, let url = panel.url { store.setDraftCwd(controller.id, cwd: url.path) }
         } label: {
-            ComposerControlLabel(icon: "folder", title: ThreadStore.displayName(for: controller.cwd), chevron: controller.isDraft)
+            ComposerControlLabel(icon: "folder", title: ThreadStore.displayName(for: controller.cwd), chevron: controller.isDraft, textSize: 12)
         }
         .buttonStyle(.plain)
         .disabled(!controller.isDraft)
@@ -367,7 +358,7 @@ struct ComposerView: View {
         } label: {
             ComposerControlLabel(icon: controller.settings.permissionMode == "auto" ? "clock.arrow.circlepath" : "checkmark.shield",
                                  title: compact ? nil : (controller.settings.permissionMode == "auto" ? "Approve for me" : permissionTitle),
-                                 chevron: false)
+                                 chevron: false, foreground: Theme.textTertiary)
                 .fixedSize(horizontal: true, vertical: false)
         }
         .menuStyle(.button)
@@ -394,6 +385,9 @@ private struct ComposerControlLabel: View {
     var title: String?
     var secondary: String? = nil
     var chevron = false
+    var foreground: Color = Theme.textSecondary
+    var secondaryForeground: Color? = nil
+    var textSize: CGFloat = 14
     @State private var hovered = false
 
     var body: some View {
@@ -402,19 +396,54 @@ private struct ComposerControlLabel: View {
                 Image(systemName: icon).font(.system(size: title == nil ? 16 : 13, weight: .regular))
             }
             if let title {
-                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                Text(title).font(.system(size: textSize, weight: .regular)).lineLimit(1).truncationMode(.middle)
             }
             if let secondary {
-                Text(secondary).font(.system(size: 13)).lineLimit(1).fixedSize()
+                Text(secondary).font(.system(size: textSize, weight: .regular)).lineLimit(1).fixedSize()
+                    .foregroundStyle(secondaryForeground ?? foreground)
             }
-            if chevron { Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)) }
+            if chevron {
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .regular))
+                    .foregroundStyle(Theme.textTertiary)
+            }
         }
-        .foregroundStyle(Theme.textSecondary)
+        .foregroundStyle(foreground)
         .padding(.horizontal, title == nil ? 0 : 6)
         .frame(minWidth: 28, minHeight: 28)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? Theme.chipFill : .clear))
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
+    }
+}
+
+/// Labels are derived from the actual native model/effort values; they never change engine settings.
+enum ComposerPresentation {
+    static func modelName(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.lowercased().hasPrefix("gpt-"), !value.contains(where: \.isWhitespace) else { return value }
+        let components = value.dropFirst(4).split(separator: "-").map(String.init)
+        guard let version = components.first, !version.isEmpty,
+              version.split(separator: ".", omittingEmptySubsequences: false)
+                .allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else { return value }
+        let suffix = components.dropFirst().map { word in
+            word.prefix(1).uppercased() + word.dropFirst()
+        }.joined(separator: " ")
+        return "GPT-" + version + (suffix.isEmpty ? "" : " " + suffix)
+    }
+
+    static func effortName(_ raw: String) -> String {
+        switch raw {
+        case "none": "None"
+        case "minimal": "Minimal"
+        case "low": "Low"
+        case "medium": "Medium"
+        case "high": "High"
+        case "xhigh": "Extra high"
+        case "max": "Max"
+        case "ultra": "Ultra"
+        case "ultracode": "Ultracode"
+        default: raw
+        }
     }
 }
 

@@ -53,7 +53,7 @@ private struct AttachmentTile: View {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 56, height: 56)
+                .frame(width: 120, height: 120)
                 .clipped()
         } else {
             HStack(spacing: 7) {

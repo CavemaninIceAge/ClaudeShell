@@ -249,8 +249,8 @@
       activity.className = 'turn-activity';
       const summary = document.createElement('summary');
       const milliseconds = item.meta && item.meta.durationMs;
-      const duration = milliseconds ? (milliseconds >= 60000 ? Math.floor(milliseconds / 60000) + '分' + Math.floor(milliseconds % 60000 / 1000) + '秒' : Math.max(1, Math.round(milliseconds / 1000)) + '秒') : '';
-      summary.innerHTML = '<span>' + (duration ? '已工作 ' + duration : '查看工作过程') + '</span><span class="chev">' + icon('chevron') + '</span>';
+      const duration = milliseconds ? (milliseconds >= 60000 ? Math.floor(milliseconds / 60000) + 'm ' + Math.floor(milliseconds % 60000 / 1000) + 's' : Math.max(1, Math.round(milliseconds / 1000)) + 's') : '';
+      summary.innerHTML = '<span>' + (duration ? 'Worked for ' + duration : 'View work') + '</span><span class="chev">' + icon('chevron') + '</span>';
       const body = document.createElement('div'); body.className = 'turn-activity-body';
       const tools = blocks.filter(b => b.kind === 'tool');
       if (tools.length) body.appendChild(renderToolGroup(tools, false));

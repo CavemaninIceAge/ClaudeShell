@@ -59,16 +59,18 @@ struct SidebarView: View {
                             if allThreads.isEmpty { emptyLabel("没有找到对话") }
                         } else {
                             if !pinned.isEmpty {
-                                ForEach(Array(pinned.prefix(allPinnedVisible ? pinned.count : 5))) { threadRow($0, pinned: true) }
-                                if pinned.count > 5 {
-                                    Button(allPinnedVisible ? "Show less" : "Show more") { allPinnedVisible.toggle() }
-                                        .font(.system(size: 14)).foregroundStyle(Theme.textTertiary)
+                                ForEach(Array(pinned.prefix(allPinnedVisible ? pinned.count : 4))) { threadRow($0, pinned: true) }
+                                if pinned.count > 4 {
+                                    Button { allPinnedVisible.toggle() } label: {
+                                        Text(allPinnedVisible ? "Show less" : "Show more")
+                                            .font(.system(size: 14)).foregroundStyle(Theme.textTertiary)
+                                    }
                                         .buttonStyle(SidebarCellStyle())
                                         .padding(.leading, 32).frame(height: 31)
                                         .accessibilityLabel(allPinnedVisible ? "收起固定对话" : "显示全部固定对话")
                                 }
                             }
-                            recentHeader.padding(.top, pinned.isEmpty ? 14 : 26)
+                            recentHeader.padding(.top, pinned.isEmpty ? 14 : 20)
                             if grouping == "projects" {
                                 ForEach(store.groups) { project($0) }
                                 if store.groups.isEmpty { emptyLabel("选择项目文件夹开始") }
@@ -113,7 +115,7 @@ struct SidebarView: View {
                 Button("设置与账号") { navigation.visit(.settings) }
             } label: {
                 HStack(spacing: 7) {
-                    Text(workspaceEngine.displayName).font(.system(size: 18, weight: .semibold))
+                    Text(workspaceEngine.displayName).font(.system(size: 18, weight: .medium))
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .medium)).foregroundStyle(Theme.textTertiary)
                 }.frame(height: 30).padding(.horizontal, 4)
             }
@@ -150,7 +152,7 @@ struct SidebarView: View {
                     Text(grouping == "projects" ? "Projects" : "Recents").font(.system(size: 14))
                     Image(systemName: "chevron.down").font(.system(size: 9))
                 }
-                .foregroundStyle(Theme.textTertiary).frame(height: 28)
+                .foregroundStyle(Theme.sidebarCaption).frame(height: 28)
             }
             .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
             .accessibilityLabel("对话列表视图")
@@ -286,7 +288,7 @@ private struct SidebarThreadCell: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Text(thread.title).font(.system(size: 14)).lineLimit(1).truncationMode(.tail)
+                Text(thread.title).font(.system(size: 14, weight: .regular)).foregroundStyle(Theme.sidebarText).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 0)
                 if thread.liveStatus != nil { Circle().stroke(Theme.textSecondary, lineWidth: 1.25).frame(width: 8, height: 8) }
             }
@@ -312,7 +314,7 @@ private struct SidebarCellSurface<Content: View>: View {
     @ViewBuilder var content: Content
     @State private var hovered = false
     var body: some View {
-        content.foregroundStyle(Theme.textPrimary)
+        content.foregroundStyle(Theme.sidebarText)
             .background(RoundedRectangle(cornerRadius: 10).fill(selected || pressed ? Theme.selectedFill : hovered ? Theme.hoverFill : Color.clear))
             .onHover { hovered = $0 }
     }

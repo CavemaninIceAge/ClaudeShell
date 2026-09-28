@@ -18,11 +18,11 @@ struct AppNavigationRail: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            destination(.home, title: "首页", symbol: "house", selectedSymbol: "house.fill", size: 20)
-            destination(.history, title: "历史", symbol: "clock", size: 19)
-            destination(.library, title: "资料库", symbol: "books.vertical", size: 20)
-            destination(.images, title: "图片", symbol: "photo.on.rectangle.angled", size: 20)
-            destination(.apps, title: "应用", symbol: "at", size: 20)
+            destination(.home, title: "首页")
+            destination(.history, title: "历史")
+            destination(.library, title: "资料库")
+            destination(.images, title: "图片")
+            destination(.apps, title: "应用")
             Menu {
                 Button("设置与账号") { navigation.visit(.settings) }
                 Button("查看历史") { navigation.visit(.history) }
@@ -69,11 +69,10 @@ struct AppNavigationRail: View {
         .accessibilityLabel("应用导航")
     }
 
-    private func destination(_ route: WorkspaceRoute, title: String, symbol: String, selectedSymbol: String? = nil, size: CGFloat) -> some View {
+    private func destination(_ route: WorkspaceRoute, title: String) -> some View {
         let selected = navigation.route == route
         return Button { navigation.visit(route, threadID: route == .home ? store.selectedId : nil) } label: {
-            Image(systemName: selected ? (selectedSymbol ?? symbol) : symbol)
-                .font(.system(size: size, weight: .regular))
+            RailGlyph(route: route, selected: selected).frame(width: 20, height: 20)
         }
         .buttonStyle(RailButtonStyle(selected: selected))
         .help(title).accessibilityLabel(title)

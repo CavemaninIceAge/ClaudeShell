@@ -43,11 +43,17 @@ struct WorkspaceInspector: View {
         return result
     }
 
+    private let previewLimit = 2
+    private let rowHeight: CGFloat = 30
+
     private var preferredHeight: CGFloat {
-        let outputs = outputRows.isEmpty ? 22 : CGFloat(showAllOutputs ? outputRows.count : min(outputRows.count, 3)) * 53 + (outputRows.count > 3 ? 26 : 0)
-        let sources = sourceRows.isEmpty ? 22 : CGFloat(showAllSources ? sourceRows.count : min(sourceRows.count, 3)) * 47 + (sourceRows.count > 3 ? 26 : 0)
-        let agents = artifacts.subagents.isEmpty ? 22 : (showAgents ? CGFloat(artifacts.subagents.count) * 82 + 32 : 28)
-        return min(640, 228 + outputs + sources + agents + (addingSource ? 80 : 0) + (actionError != nil || content.lastError != nil ? 64 : 0))
+        let outputs = outputRows.isEmpty ? 20 : CGFloat(showAllOutputs ? outputRows.count : min(outputRows.count, previewLimit)) * rowHeight + (outputRows.count > previewLimit ? 20 : 0)
+        let sources = sourceRows.isEmpty ? 20 : CGFloat(showAllSources ? sourceRows.count : min(sourceRows.count, previewLimit)) * rowHeight + (sourceRows.count > previewLimit ? 20 : 0)
+        let statusCount = Set(artifacts.subagents.map { $0.state.rawValue }).count
+        let summaryHeight: CGFloat = statusCount > 1 ? 40 : 24
+        let agents = artifacts.subagents.isEmpty ? 20 : (showAgents ? CGFloat(artifacts.subagents.count) * 70 + summaryHeight + 12 : summaryHeight)
+        // Three compact sections: 14pt vertical insets, a 20pt heading and an 8pt gap.
+        return min(640, 170 + outputs + sources + agents + (addingSource ? 80 : 0) + (actionError != nil || content.lastError != nil ? 64 : 0))
     }
 
     var body: some View {
@@ -60,7 +66,7 @@ struct WorkspaceInspector: View {
                 sourcesSection
                 if let error = actionError ?? content.lastError {
                     Text(error).font(.system(size: 12)).foregroundStyle(Theme.danger)
-                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 24).padding(.bottom, 24)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 14)
                         .accessibilityLabel("操作失败：" + error)
                 }
             }
@@ -75,28 +81,24 @@ struct WorkspaceInspector: View {
     }
 
     private var outputsSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("输出", count: outputRows.count) {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Outputs") {
                 Button { content.importFiles(threadID: threads.selectedId) } label: { plusIcon }
                     .buttonStyle(.plain).help("导入本地文件").accessibilityLabel("导入本地文件")
             }
             if outputRows.isEmpty {
-                empty("还没有输出")
+                empty("Create a file or site")
             } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(showAllOutputs ? outputRows : Array(outputRows.prefix(3))) { asset in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(showAllOutputs ? outputRows : Array(outputRows.prefix(previewLimit))) { asset in
                         Button { open(asset.url) } label: {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: asset.isImage ? "photo" : "doc").font(.system(size: 17, weight: .regular))
-                                    .frame(width: 20, height: 24).foregroundStyle(Theme.textSecondary)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(asset.name).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
-                                    Text(asset.url.pathExtension.isEmpty ? "本地文件" : asset.url.pathExtension.uppercased())
-                                        .font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
-                                }
+                            HStack(spacing: 10) {
+                                Image(systemName: asset.isImage ? "photo" : "doc").font(.system(size: 15, weight: .regular))
+                                    .frame(width: 20, height: 20).foregroundStyle(Theme.textTertiary)
+                                Text(asset.name).font(.system(size: 14)).foregroundStyle(Theme.textSecondary).lineLimit(1)
                                 Spacer(minLength: 0)
                             }
-                            .padding(.vertical, 7).contentShape(Rectangle())
+                            .frame(height: rowHeight).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).help(asset.url.path).accessibilityLabel("打开文件：" + asset.name)
                         .contextMenu {
@@ -108,40 +110,46 @@ struct WorkspaceInspector: View {
                             }
                         }
                     }
-                }
-                if outputRows.count > 3 {
-                    Button(showAllOutputs ? "收起" : "查看全部 \(outputRows.count) 项") { showAllOutputs.toggle() }
-                        .font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    if outputRows.count > previewLimit {
+                        Button { showAllOutputs.toggle() } label: {
+                            viewAllLabel(expanded: showAllOutputs)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showAllOutputs ? "收起输出" : "查看全部 \(outputRows.count) 项输出")
+                    }
                 }
             }
         }
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
     }
 
     private var subagentsSection: some View {
         let snapshot = artifacts
-        return VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("子代理", count: snapshot.subagents.count) { EmptyView() }
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Subagents") { EmptyView() }
             if snapshot.subagents.isEmpty {
                 empty("尚未调用子代理")
             } else {
                 Button { showAgents.toggle() } label: {
                     HStack(spacing: 6) {
-                        HStack(spacing: -4) {
-                            ForEach(Array(snapshot.subagents.prefix(4))) { agent in
-                                Image(systemName: agentSymbol(agent.state)).font(.system(size: 13))
-                                    .foregroundStyle(agentColor(agent.state)).frame(width: 21, height: 22)
-                                    .background(Theme.background, in: Circle())
+                        HStack(spacing: 3) {
+                            ForEach(Array(snapshot.subagents.prefix(4).enumerated()), id: \.element.id) { index, agent in
+                                SubagentAvatar(index: index).frame(width: 17, height: 20)
+                                    .accessibilityLabel(agent.name + "，" + agent.statusLabel)
                             }
                         }
-                        Text(agentSummary(snapshot)).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        Text(agentSummary(snapshot)).font(.system(size: 14)).foregroundStyle(Theme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
                         Image(systemName: showAgents ? "chevron.up" : "chevron.down")
                             .font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.textTertiary)
                     }
+                    .frame(minHeight: 24)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).accessibilityLabel(showAgents ? "收起子代理详情" : "展开子代理详情")
+                .accessibilityValue(agentSummary(snapshot))
                 if showAgents { VStack(alignment: .leading, spacing: 12) {
                     ForEach(snapshot.subagents) { agent in
                         DisclosureGroup {
@@ -154,10 +162,10 @@ struct WorkspaceInspector: View {
                             .padding(.top, 8).frame(maxWidth: .infinity, alignment: .leading)
                         } label: {
                             HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: agentSymbol(agent.state)).font(.system(size: 13))
+                                Image(systemName: agentSymbol(agent.state)).font(.system(size: 14))
                                     .foregroundStyle(agentColor(agent.state)).frame(width: 16, height: 18)
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(agent.name).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+                                    Text(agent.name).font(.system(size: 14)).foregroundStyle(Theme.textPrimary).lineLimit(2)
                                     Text(agent.statusLabel).font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
                                 }
                             }
@@ -168,12 +176,13 @@ struct WorkspaceInspector: View {
                 } }
             }
         }
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
     }
 
     private var sourcesSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("来源", count: sourceRows.count) {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Sources") {
                 Button { addingSource.toggle(); actionError = nil } label: { plusIcon }
                     .buttonStyle(.plain).help("添加来源链接").accessibilityLabel("添加来源链接")
             }
@@ -194,11 +203,11 @@ struct WorkspaceInspector: View {
             if sourceRows.isEmpty {
                 empty("还没有来源")
             } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(showAllSources ? sourceRows : Array(sourceRows.prefix(3))) { source in
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(showAllSources ? sourceRows : Array(sourceRows.prefix(previewLimit))) { source in
                         if let url = source.url {
                             Button { open(url) } label: {
-                                sourceLabel(source, icon: "link", detail: url.host ?? "HTTPS")
+                                sourceLabel(source, icon: "globe")
                             }
                             .buttonStyle(.plain).help(url.absoluteString).accessibilityLabel("打开来源：" + source.name)
                             .contextMenu {
@@ -208,61 +217,83 @@ struct WorkspaceInspector: View {
                                 }
                             }
                         } else {
-                            sourceLabel(source, icon: "wrench.and.screwdriver", detail: "对话中调用的工具")
+                            sourceLabel(source, icon: sourceSymbol(source.name))
                                 .help(source.name)
                         }
                     }
-                }
-                if sourceRows.count > 3 {
-                    Button(showAllSources ? "收起" : "查看全部 \(sourceRows.count) 项") { showAllSources.toggle() }
-                        .font(.system(size: 12)).buttonStyle(.plain).foregroundStyle(Theme.textSecondary)
+                    if sourceRows.count > previewLimit {
+                        Button { showAllSources.toggle() } label: {
+                            viewAllLabel(expanded: showAllSources)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showAllSources ? "收起来源" : "查看全部 \(sourceRows.count) 项来源")
+                    }
                 }
             }
         }
-        .padding(24)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
     }
 
-    private var separator: some View { Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, 24) }
+    private var separator: some View { Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, 20) }
     private var plusIcon: some View {
-        Image(systemName: "plus").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textSecondary)
-            .frame(width: 24, height: 24).contentShape(Rectangle())
+        Image(systemName: "plus").font(.system(size: 15, weight: .regular)).foregroundStyle(Theme.textTertiary)
+            .frame(width: 20, height: 20).contentShape(Rectangle())
     }
 
-    private func sectionHeader<Action: View>(_ title: String, count: Int, @ViewBuilder action: () -> Action) -> some View {
+    private func sectionHeader<Action: View>(_ title: String, @ViewBuilder action: () -> Action) -> some View {
         HStack(spacing: 6) {
-            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textSecondary)
-            if count > 0 { Text("\(count)").font(.system(size: 12)).foregroundStyle(Theme.textTertiary) }
+            Text(title).font(.system(size: 14)).foregroundStyle(Theme.textSecondary)
             Spacer()
             action()
         }
-        .frame(minHeight: 24)
+        .frame(height: 20)
     }
 
     private func empty(_ title: String) -> some View {
-        Text(title).font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+        Text(title).font(.system(size: 14)).foregroundStyle(Theme.textTertiary)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(minHeight: 20, alignment: .leading)
     }
 
     private func agentSummary(_ snapshot: WorkspaceArtifactSnapshot) -> String {
         var parts: [String] = []
-        if snapshot.runningCount > 0 { parts.append("\(snapshot.runningCount) 个运行中") }
-        if snapshot.completedCount > 0 { parts.append("\(snapshot.completedCount) 个已完成") }
+        if snapshot.runningCount > 0 { parts.append("\(snapshot.runningCount) running") }
+        if snapshot.completedCount > 0 { parts.append("\(snapshot.completedCount) done") }
         let failed = snapshot.subagents.filter { $0.state == .failed }.count
         let unknown = snapshot.subagents.filter { $0.state == .unknown }.count
-        if failed > 0 { parts.append("\(failed) 个失败") }
-        if unknown > 0 { parts.append("\(unknown) 个状态未报告") }
+        if failed > 0 { parts.append("\(failed) failed") }
+        if unknown > 0 { parts.append("\(unknown) unreported") }
         return parts.joined(separator: " · ")
     }
 
-    private func sourceLabel(_ source: WorkspaceToolSource, icon: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Theme.textSecondary).frame(width: 18, height: 20)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(source.name).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
-                Text(detail).font(.system(size: 11)).foregroundStyle(Theme.textTertiary).lineLimit(1)
-            }
+    private func sourceSymbol(_ name: String) -> String {
+        let normalized = name.lowercased()
+        if normalized.contains("web") || normalized.contains("search") || normalized.contains("browse") { return "globe" }
+        if normalized.contains("app") || normalized.contains("mcp") { return "network" }
+        if normalized.contains("read") || normalized.contains("file") { return "doc.text" }
+        return "wrench"
+    }
+
+    private func sourceLabel(_ source: WorkspaceToolSource, icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Theme.textTertiary).frame(width: 20, height: 20)
+            Text(source.name).font(.system(size: 14)).foregroundStyle(Theme.textSecondary).lineLimit(1)
             Spacer(minLength: 0)
         }
+        .frame(height: rowHeight)
+        .contentShape(Rectangle())
+    }
+
+    private func viewAllLabel(expanded: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: expanded ? "chevron.up" : "circle.grid.2x2")
+                .font(.system(size: 14)).frame(width: 20, height: 20)
+            Text(expanded ? "Show less" : "View all").font(.system(size: 14))
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Theme.textTertiary)
+        .frame(height: 20)
         .contentShape(Rectangle())
     }
 
@@ -298,5 +329,23 @@ struct WorkspaceInspector: View {
         // Called exclusively by the user's file/source action; rendering never opens or reads targets.
         guard url.isFileURL || WorkspaceConversationArtifacts.httpsURL(url.absoluteString) != nil else { return }
         navigation.open(url)
+    }
+}
+
+/// Identity marks only; completion and failure continue to come from native engine state.
+private struct SubagentAvatar: View {
+    let index: Int
+    private let colors = ["#81C779", "#4EB8A0", "#65BBD0", "#689EF0"]
+    var body: some View {
+        ZStack {
+            ForEach(0..<(index == 1 ? 3 : index == 3 ? 4 : 7), id: \.self) { petal in
+                RoundedRectangle(cornerRadius: index == 1 ? 2 : 3)
+                    .fill(Theme.dynamic(colors[index % 4], colors[index % 4]))
+                    .frame(width: index == 3 ? 7 : 4, height: 8)
+                    .offset(y: -4)
+                    .rotationEffect(.degrees(Double(petal) * 360 / Double(index == 1 ? 3 : index == 3 ? 4 : 7)))
+            }
+            Circle().fill(Theme.background.opacity(0.75)).frame(width: 3, height: 3)
+        }
     }
 }

@@ -14,6 +14,8 @@ enum Theme {
     static let rail = dynamic("#F5F5F5", "#141414")
     static let toolbar = dynamic("#F3F3F3", "#141414")
     static let accent = dynamic("#347CF7", "#6BA1FF")
+    static let sidebarCaption = dynamic("#A7A8A8", "#8E8E8E")
+    static let sidebarText = dynamic("#3C3D3F", "#DFDFDF")
     static let sidebarInput = dynamic("#EEEEEE", "#242424")
     static let background = dynamic("#FFFFFF", "#181818")
     static let composerFill = dynamic("#FFFFFF", "#363636")

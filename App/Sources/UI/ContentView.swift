@@ -55,7 +55,7 @@ struct WorkspaceView: View {
                             toolsPanel.frame(width: min(620, max(440, geometry.size.width * 0.38)))
                         }
                         if navigation.route == .home && !navigation.toolsVisible && navigation.inspectorVisible && inlineInspector {
-                            inspector.frame(width: 300).padding(.leading, 8).padding(.trailing, 8)
+                            inspector.frame(width: 300).padding(.trailing, 5)
                                 .padding(.top, 6).frame(maxHeight: .infinity, alignment: .top)
                         }
                     }
@@ -242,9 +242,9 @@ struct WorkspaceToolbar: View {
             } label: { WorkspaceIcon(.more).frame(width: 28, height: 28) }
                 .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
                 .help("更多操作").accessibilityLabel("更多操作")
-            iconButton("folder", title: "项目文件") { showTools(.files) }.disabled(navigation.route != .home)
-            iconButton("terminal", title: "命令与输出") { showTools(.command) }.disabled(navigation.route != .home)
-            iconButton("list.bullet.circle", title: "产物、子代理与来源") { navigation.inspectorVisible.toggle() }
+            Button { navigation.inspectorVisible.toggle() } label: { WorkspaceIcon(.inspector) }
+                .buttonStyle(WorkspaceIconButtonStyle())
+                .help("产物、子代理与来源").accessibilityLabel("产物、子代理与来源")
                 .background(navigation.inspectorVisible && navigation.route == .home ? Theme.hoverFill : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .disabled(navigation.route != .home)
                 .keyboardShortcut("i", modifiers: [.command, .option])
@@ -317,7 +317,7 @@ private struct WorkspaceSearchSheet: View {
 }
 
 /// Configures only this app's own window; never activates, orders, moves or resizes it.
-private struct WorkspaceWindowStyle: NSViewRepresentable {
+struct WorkspaceWindowStyle: NSViewRepresentable {
     func makeNSView(context: Context) -> ChromeView { ChromeView() }
     func updateNSView(_ view: ChromeView, context: Context) { view.configure() }
     final class ChromeView: NSView {
@@ -329,6 +329,19 @@ private struct WorkspaceWindowStyle: NSViewRepresentable {
             window.styleMask.insert(.fullSizeContentView)
             window.toolbar = nil
             window.isMovableByWindowBackground = false
+            alignWindowControls()
+        }
+        override func layout() { super.layout(); alignWindowControls() }
+        private func alignWindowControls() {
+            guard let window, let frameView = window.contentView?.superview else { return }
+            // Position the real AppKit controls inside our 44pt titlebar; never draw substitutes.
+            for (index, kind) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+                guard let button = window.standardWindowButton(kind), let titlebar = button.superview else { continue }
+                let center = titlebar.convert(CGPoint(x: 23.25 + CGFloat(index) * 23, y: frameView.bounds.maxY - 23.75), from: frameView)
+                let next = NSRect(x: center.x - button.frame.width / 2, y: center.y - button.frame.height / 2,
+                                  width: button.frame.width, height: button.frame.height)
+                if button.frame != next { button.setFrameOrigin(next.origin) }
+            }
         }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
