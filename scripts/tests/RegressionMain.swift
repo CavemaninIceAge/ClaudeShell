@@ -5,6 +5,7 @@ struct RegressionMain {
     @MainActor static func main() async {
         do {
             try await AuthFileRegression.run()
+            try KeychainWriteRegression.run()
             try await AccountsRegression.run()
             try await AuthenticationSetupRegression.run()
             try await CodexRegression.run()
