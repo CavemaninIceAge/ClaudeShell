@@ -100,6 +100,23 @@ final class ConversationController: @preconcurrency Identifiable {
         self.historyLoaded = !hasSessionFile
     }
 
+    /// A transcript already loaded in memory; useful for offline rendering without a session file or engine.
+    struct Snapshot: Sendable {
+        var id: String
+        var cwd: String
+        var settings: ThreadSettings
+        var items: [TranscriptItem] = []
+        var model: String? = nil
+    }
+
+    convenience init(snapshot: Snapshot) {
+        self.init(id: snapshot.id, cwd: snapshot.cwd, settings: snapshot.settings, hasSessionFile: false)
+        self.working = snapshot.items
+        self.items = snapshot.items
+        self.fileModel = snapshot.model
+        self.historyLoaded = true
+    }
+
     var isDraft: Bool { !hasSessionFile && working.isEmpty }
     var canSend: Bool { !isWorking && pendingPermissions.isEmpty && !isLoadingHistory }
     var isLiveInTerminal: Bool { terminalStatus != nil }

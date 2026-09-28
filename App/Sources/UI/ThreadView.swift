@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ThreadView: View {
@@ -23,11 +24,11 @@ struct ThreadView: View {
                         }
                         ComposerView(controller: controller, dropTargeted: dropTargeted)
                     }
+                    .padding(.horizontal, 16)
                     .frame(maxWidth: Theme.columnWidth)
-                    .padding(.horizontal, 24)
                     .padding(.top, 6)
-                    .padding(.bottom, 18)
-                    // 正文列（transcript.css #root）和这张卡都是 780 宽、外加 24 边距，两者严格同轴。
+                    .padding(.bottom, 12)
+                    // Transcript and composer share a 768pt outer column including 16pt gutters.
                 }
             }
             if controller.isLoadingHistory && controller.items.isEmpty {
@@ -42,50 +43,6 @@ struct ThreadView: View {
             if let handoff = controller.handoff { HandoffSourceBar(handoff: handoff) }
         }
         .task { controller.loadHistoryIfNeeded() }
-        .toolbar {
-            if controller.engine == .codex && !controller.isDraft {
-                ToolbarItem(placement: .primaryAction) { ClaudeTakeoverButton(threadId: controller.id) }
-            }
-            // macOS 26 会给工具栏项套一层玻璃胶囊，这行只是一行小字，不要那层壳（One Shadow Rule）。
-            if #available(macOS 26.0, *) {
-                ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
-                    .sharedBackgroundVisibility(.hidden)
-            } else {
-                ToolbarItem(placement: .primaryAction) { StatusBadge(controller: controller) }
-            }
-        }
-    }
-}
-
-/// 工具栏右侧的一小行：模型 · 强度 · 本会话花费——和终端一样明着写，悬停看原始 id 和来源。
-/// 进行中的状态只在正文里那一行 shimmer 上显示。
-private struct StatusBadge: View {
-    let controller: ConversationController
-    @Environment(ThreadStore.self) private var store
-
-    var body: some View {
-        let e = controller.effective(defaults: store.terminalDefaults)
-        HStack(spacing: 0) {
-            Text(controller.engine.displayName)
-            if let name = e.modelName {
-                Text(" · ")
-                Text(name)
-                    .help("模型：\(e.modelId ?? name)（\(e.modelPinned ? "本对话指定" : "跟随终端设置")）")
-            }
-            if let effort = e.effort {
-                if e.modelName != nil { Text(" · ") }
-                Text(effort)
-                    .help("强度：\(effort)（\(e.effortPinned ? "本对话指定" : "终端默认")）")
-            }
-            if controller.totalCostUSD > 0 {
-                if e.modelName != nil || e.effort != nil { Text(" · ") }
-                Text(String(format: "$%.2f", controller.totalCostUSD))
-                    .monospacedDigit()
-                    .help("本会话累计花费（按 API 价目估算）")
-            }
-        }
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
     }
 }
 
@@ -94,52 +51,66 @@ struct EmptyThreadView: View {
     let controller: ConversationController
     var dropTargeted = false
     @Environment(ThreadStore.self) private var store
-    @Environment(AccountStore.self) private var accounts
 
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 30)
-            VStack(spacing: 28) {
-                Text(controller.handoff == nil ? "今天想做些什么？" : "继续这段对话")
-                    .font(.system(size: 28, weight: .medium))
-                    .tracking(-0.6)
-                    .foregroundStyle(Theme.textPrimary)
+        GeometryReader { geometry in
+            let composerTop = max(152, (geometry.size.height + Theme.toolbarHeight) * 0.42 - Theme.toolbarHeight)
+            VStack(spacing: 24) {
+                heading.frame(minHeight: 112, alignment: .bottom)
                 ComposerView(controller: controller, dropTargeted: dropTargeted)
-                    .frame(maxWidth: 720)
-                VStack(spacing: 8) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "person.crop.circle").font(.system(size: 11))
-                        Text(accountLabel).lineLimit(1).truncationMode(.middle)
-                    }
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.textSecondary)
-                    Text(controller.handoff?.isPending == true ? "发送后，Claude 会先读取原对话上下文。原 Codex 对话保留。" : "在左下角切换账号，或推送至终端 / Codex App。")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textSecondary)
-                    if controller.engine == .codex && store.codexMissing {
-                        Label("未找到 Codex。请先在终端安装 codex，再刷新对话列表。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.warn)
-                    }
-                    if controller.engine == .claude && store.claudeMissing {
-                        Label("未找到 Claude Code。请先在终端安装 claude，再刷新对话列表。", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.warn)
-                    }
+                if controller.handoff?.isPending == true {
+                    Text("发送后，Claude 会读取原对话上下文。原 Codex 对话保留。")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                }
+                if controller.engine == .codex && store.codexMissing {
+                    Label("未找到 Codex。安装 codex 后刷新对话列表。", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 12)).foregroundStyle(Theme.warn)
+                }
+                if controller.engine == .claude && store.claudeMissing {
+                    Label("未找到 Claude Code。安装 claude 后刷新对话列表。", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 12)).foregroundStyle(Theme.warn)
                 }
             }
-            .padding(.horizontal, 32)
-            Spacer(minLength: 30)
-            Spacer(minLength: 0)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: Theme.columnWidth)
+            .padding(.top, max(8, composerTop - 136))
+            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
 
-    private var accountLabel: String {
-        if controller.engine == .codex {
-            return accounts.activeCodex.map { "Codex · \($0.email) · 仅此 App" } ?? "Codex · 从左下角保存本机登录态"
+    private func chooseWorkingDirectory() {
+        guard controller.isDraft, controller.handoff == nil else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: controller.cwd)
+        panel.prompt = "选择工作目录"
+        if panel.runModal() == .OK, let url = panel.url {
+            // Changing the directory must preserve the draft's selected engine and model.
+            store.setDraftCwd(controller.id, cwd: url.path)
         }
-        if let provider = accounts.activeProvider { return "\(provider.name) · 仅此 App" }
-        return accounts.active.map { "Claude · \($0.email) · 仅此 App" } ?? "Claude · 从左下角添加账号"
+    }
+
+    @ViewBuilder private var heading: some View {
+        if controller.handoff != nil {
+            Text("继续这段对话").font(.system(size: 28)).tracking(-0.35)
+                .foregroundStyle(Theme.textPrimary)
+        } else if controller.cwd == NSHomeDirectory() {
+            Text("我们要构建什么？").font(.system(size: 28)).tracking(-0.35)
+                .foregroundStyle(Theme.textPrimary)
+        } else {
+            Button(action: chooseWorkingDirectory) {
+                (Text("我们应该在")
+                 + Text(ThreadStore.displayName(for: controller.cwd)).underline(true, pattern: .dot, color: Theme.textTertiary)
+                 + Text("中做些什么？"))
+                    .font(.system(size: 28)).tracking(-0.35)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+            .buttonStyle(.plain)
+            .help("选择工作文件夹")
+        }
     }
 }
 
@@ -165,7 +136,7 @@ struct HandoffSourceBar: View {
                 .foregroundStyle(Theme.textPrimary)
                 .disabled(store.summary(for: handoff.sourceThreadId) == nil)
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
         .background(Theme.cardFill)

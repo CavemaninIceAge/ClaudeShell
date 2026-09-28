@@ -4,222 +4,252 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(ThreadStore.self) private var store
     @Environment(AccountStore.self) private var accounts
+    var onToggleSidebar: () -> Void = {}
+    @AppStorage("workspacePinnedThreads") private var pinnedData = "[]"
+    @State private var expandedProjects: Set<String> = []
+    @State private var recentLimit = 8
+    @State private var searching = false
     @State private var renaming: ThreadSummary?
     @State private var renameText = ""
-    @State private var showsProjects = true
-    @State private var collapsedProjects: Set<String> = []
     @FocusState private var searchFocused: Bool
 
-    private var recentThreads: [ThreadSummary] {
-        store.groups.flatMap(\.threads).sorted { $0.updatedAt > $1.updatedAt }
-    }
+    private var pinnedIDs: [String] { (try? JSONDecoder().decode([String].self, from: Data(pinnedData.utf8))) ?? [] }
+    private var allThreads: [ThreadSummary] { store.groups.flatMap(\.threads).sorted { $0.updatedAt > $1.updatedAt } }
+    private var pinned: [ThreadSummary] { pinnedIDs.compactMap { id in allThreads.first { $0.id == id } } }
+    private var recent: [ThreadSummary] { allThreads.filter { !pinnedIDs.contains($0.id) } }
 
     var body: some View {
-        let selection = Binding<String?>(get: { store.selectedId }, set: {
-            if let id = $0, id != store.selectedId { store.selectedId = id }
-        })
         VStack(spacing: 0) {
-            sidebarHeader
-            HStack(spacing: 14) {
-                sectionButton("项目", selected: showsProjects) { showsProjects = true }
-                sectionButton("最近", selected: !showsProjects) { showsProjects = false }
-                Spacer()
-                if store.isScanning { ProgressView().controlSize(.mini) }
-                else {
-                    Button { Task { await store.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 10))
-                    }
-                    .buttonStyle(.plain)
-                    .help("刷新对话列表（⌘R）")
-                    .accessibilityLabel("刷新对话列表")
-                }
+            HStack {
+                Spacer(minLength: 76)
+                Button(action: onToggleSidebar) { WorkspaceIcon(.sidebar) }
+                    .buttonStyle(WorkspaceIconButtonStyle())
+                    .help("收起侧栏").accessibilityLabel("收起侧栏")
+                    .keyboardShortcut("s", modifiers: [.command, .control])
             }
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.horizontal, 21)
-            .padding(.top, 20)
-            .padding(.bottom, 7)
-            List(selection: selection) {
-                if showsProjects && store.query.isEmpty {
-                    ForEach(store.groups) { group in
-                        DisclosureGroup(isExpanded: Binding(
-                            get: { !collapsedProjects.contains(group.id) },
-                            set: { expanded in
-                                if expanded { collapsedProjects.remove(group.id) }
-                                else { collapsedProjects.insert(group.id) }
+            .padding(.horizontal, 12)
+            .frame(height: Theme.toolbarHeight)
+            .background(WindowDragRegion())
+            VStack(spacing: 0) {
+                navigationRow("新聊天", icon: .compose, shortcut: "⌘N") { store.newThread() }
+                    .contextMenu {
+                        Button("新建 Claude 对话") { store.newThread(engine: .claude) }
+                        Button("新建 Codex 对话") { store.newThread(engine: .codex) }
+                        Divider()
+                        Button("选择项目文件夹…") { store.newThreadPickingFolder() }
+                    }
+                navigationRow("搜索对话", icon: .search, shortcut: "⌘K") {
+                    searching.toggle(); searchFocused = searching
+                    if !searching { store.query = "" }
+                }.keyboardShortcut("k", modifiers: .command)
+                if searching || !store.query.isEmpty { searchField.padding(.top, 4) }
+            }.padding(.horizontal, 8)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if !store.query.isEmpty {
+                            sectionTitle("搜索结果")
+                            ForEach(allThreads) { threadRow($0) }
+                            if allThreads.isEmpty { emptyLabel("没有找到对话") }
+                        } else {
+                            if !pinned.isEmpty {
+                                sectionTitle("已固定")
+                                ForEach(pinned) { threadRow($0) }
                             }
-                        )) {
-                            ForEach(group.threads) { thread in threadRow(thread) }
-                        } label: {
-                            HStack(spacing: 7) {
-                                Image(systemName: "folder").font(.system(size: 12))
-                                Text(group.name).lineLimit(1).font(.system(size: 12, weight: .medium))
-                                Spacer(minLength: 4)
-                                Text("\(group.threads.count)").font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
+                            HStack(spacing: 4) {
+                                Text("最近").font(.system(size: 14, weight: .medium))
+                                Spacer()
+                                if store.isScanning { ProgressView().controlSize(.mini) }
+                                else {
+                                    Menu {
+                                        Button("刷新对话列表") { Task { await store.refresh() } }
+                                        Button("显示全部对话") { recentLimit = max(8, recent.count) }
+                                    } label: { WorkspaceIcon(.more) }
+                                        .menuStyle(.button).menuIndicator(.hidden).buttonStyle(.plain)
+                                        .accessibilityLabel("最近对话选项")
+                                }
                             }
-                            .help(ThreadStore.displayPath(for: group.cwd))
-                            .contextMenu {
-                                Button("在此项目中新建 Claude 对话") { store.newThread(cwd: group.cwd, engine: .claude) }
-                                Button("在此项目中新建 Codex 对话") { store.newThread(cwd: group.cwd, engine: .codex) }
+                            .foregroundStyle(Theme.textTertiary.opacity(0.75))
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 8).padding(.top, 16).padding(.bottom, 4)
+                            ForEach(Array(recent.prefix(recentLimit))) { threadRow($0) }
+                            if recent.isEmpty { emptyLabel("还没有对话") }
+                            if recent.count > recentLimit {
+                                Button("显示更多") { recentLimit += 12 }
+                                    .font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+                                    .buttonStyle(.plain).padding(.horizontal, 8).frame(height: 30)
                             }
+                            HStack {
+                                Text("项目").font(.system(size: 14, weight: .medium))
+                                Spacer()
+                                Button { store.newThreadPickingFolder() } label: { WorkspaceIcon(.plus) }
+                                    .buttonStyle(.plain).help("打开项目文件夹")
+                                    .accessibilityLabel("打开项目文件夹")
+                            }
+                            .foregroundStyle(Theme.textTertiary.opacity(0.75))
+                            .padding(.vertical, 2)
+                            .padding(.horizontal, 8).padding(.top, 16).padding(.bottom, 4)
+                            ForEach(store.groups) { project($0) }
+                            if store.groups.isEmpty { emptyLabel("打开文件夹开始") }
                         }
                     }
-                } else {
-                    ForEach(recentThreads) { thread in threadRow(thread) }
+                    .padding(.horizontal, 8).padding(.top, 4).padding(.bottom, 16)
                 }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .overlay {
-                if store.groups.isEmpty {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(store.query.isEmpty ? "你的对话会出现在这里" : "没有找到对话")
-                            .font(.system(size: 12, weight: .medium))
-                        Text(store.query.isEmpty ? "按项目整理 Claude 与 Codex 对话。" : "试试标题或项目目录中的其他关键词。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 18)
-                    .allowsHitTesting(false)
+                .scrollIndicators(.hidden)
+                .onChange(of: store.selectedId) { _, id in
+                    if let id, allThreads.contains(where: { $0.id == id }) { proxy.scrollTo("thread:" + id, anchor: .center) }
                 }
             }
             if store.updateStatus.failed && !store.updateBannerDismissed { UpdateFailedBanner() }
-            Divider().overlay(Theme.line).padding(.horizontal, 16)
             AccountFooter()
         }
         .background(Theme.sidebar)
-        .sheet(item: Binding(get: { accounts.loginSession }, set: { if $0 == nil { accounts.loginSession = nil } })) { session in
-            AccountLoginSheet(session: session)
-        }
+        .onAppear { if let cwd = store.selectedController?.cwd { expandedProjects.insert(cwd) } }
+        .sheet(item: Binding(get: { accounts.loginSession }, set: { if $0 == nil { accounts.loginSession = nil } })) { AccountLoginSheet(session: $0) }
         .sheet(isPresented: Binding(get: { accounts.addingProvider }, set: { accounts.addingProvider = $0 })) { ProviderAddSheet() }
         .alert("重命名对话", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("标题", text: $renameText)
-            Button("保存") {
-                if let r = renaming { store.rename(r.id, to: renameText) }; renaming = nil
-            }
+            Button("保存") { if let thread = renaming { store.rename(thread.id, to: renameText) }; renaming = nil }
             Button("取消", role: .cancel) { renaming = nil }
         }
     }
 
-    private var sidebarHeader: some View {
-        VStack(spacing: 7) {
-            HStack(spacing: 4) {
-                Button { store.newThread() } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "square.and.pencil").font(.system(size: 14))
-                        Text("新对话").font(.system(size: 13, weight: .medium))
-                        Spacer()
-                        Text("⌘N").font(.system(size: 11)).foregroundStyle(Theme.textSecondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(SidebarActionStyle())
-                Menu {
-                    Button("新建 Claude 对话") { store.newThread(engine: .claude) }
-                    Button("新建 Codex 对话") { store.newThread(engine: .codex) }
-                    Divider()
-                    Button("选择项目文件夹…") { store.newThreadPickingFolder() }
-                } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 10)).frame(width: 26, height: 34)
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .help("选择对话引擎或工作目录")
-            }
+    private func navigationRow(_ title: String, icon: WorkspaceIcon.Kind, shortcut: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
-                TextField("搜索对话", text: Binding(get: { store.query }, set: { store.query = $0 }))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                    .focused($searchFocused)
-                    .accessibilityLabel("搜索对话或项目")
-                if !store.query.isEmpty {
-                    Button { store.query = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 11)) }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Theme.textSecondary)
-                        .help("清除搜索")
-                }
+                WorkspaceIcon(icon)
+                Text(title).font(.system(size: 13))
+                Spacer()
+                Text(shortcut).font(.system(size: 11)).foregroundStyle(Theme.textTertiary)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Theme.sidebarInput))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(searchFocused ? Theme.textSecondary : Color.clear, lineWidth: 1))
-        }
-        .padding(.horizontal, 12)
-        .padding(.top, 12)
+            .padding(.horizontal, 8).frame(height: 30)
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(SidebarCellStyle())
     }
 
-    private func sectionButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.system(size: 11, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
-                .padding(.vertical, 3)
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            TextField("搜索标题或项目", text: Binding(get: { store.query }, set: { store.query = $0 }))
+                .textFieldStyle(.plain).font(.system(size: 13)).focused($searchFocused)
+                .onExitCommand { store.query = ""; searching = false }
+            Button { store.query = ""; searching = false } label: {
+                Image(systemName: "xmark").font(.system(size: 10))
+            }.buttonStyle(.plain).accessibilityLabel("关闭搜索")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 9).frame(height: 30)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.background))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line, lineWidth: 1))
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.textTertiary.opacity(0.75))
+            .padding(.vertical, 2)
+            .padding(.horizontal, 8).padding(.top, 16).padding(.bottom, 4)
+    }
+    private func emptyLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+            .padding(.horizontal, 8).frame(height: 30)
+    }
+    private func project(_ group: ProjectGroup) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                if !expandedProjects.insert(group.id).inserted { expandedProjects.remove(group.id) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expandedProjects.contains(group.id) ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .medium)).frame(width: 8)
+                        .foregroundStyle(Theme.textTertiary)
+                    WorkspaceIcon(.folder).foregroundStyle(Theme.textSecondary)
+                    Text(group.name).font(.system(size: 13)).lineLimit(1)
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 8).frame(height: 30).contentShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(SidebarCellStyle())
+            .help(ThreadStore.displayPath(for: group.cwd))
+            .contextMenu {
+                Button("新建 Claude 对话") { store.newThread(cwd: group.cwd, engine: .claude) }
+                Button("新建 Codex 对话") { store.newThread(cwd: group.cwd, engine: .codex) }
+            }
+            if expandedProjects.contains(group.id) {
+                ForEach(group.threads) { thread in threadRow(thread, nested: true) }
+            }
+        }
+    }
+    private func threadRow(_ thread: ThreadSummary, nested: Bool = false) -> some View {
+        SidebarThreadCell(thread: thread, selected: store.selectedId == thread.id, nested: nested) { store.selectedId = thread.id }
+            .id(nested ? "project:" + thread.id : "thread:" + thread.id)
+            .contextMenu {
+                Button(pinnedIDs.contains(thread.id) ? "取消固定" : "固定对话") { togglePin(thread.id) }
+                if thread.engine == .codex {
+                    Button("用 Claude 接管") { Task { await store.takeoverWithClaude(thread.id) } }
+                        .disabled(store.takingOverId != nil || store.controllers[thread.id]?.showsActivity == true || store.controllers[thread.id]?.isLoadingHistory == true)
+                }
+                Divider()
+                Button("重命名…") { renameText = thread.title; renaming = thread }
+                Button("复制会话 ID") {
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(thread.id, forType: .string)
+                }
+                Button("在访达中显示目录") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: thread.cwd)]) }
+                Divider()
+                Button("从列表中移除") { store.hide(thread.id) }
+            }
+    }
+    private func togglePin(_ id: String) {
+        var ids = pinnedIDs
+        if ids.contains(id) { ids.removeAll { $0 == id } } else { ids.insert(id, at: 0) }
+        if let data = try? JSONEncoder().encode(ids), let text = String(data: data, encoding: .utf8) { pinnedData = text }
+    }
+}
+
+private struct SidebarThreadCell: View {
+    let thread: ThreadSummary
+    let selected: Bool
+    let nested: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if nested { Color.clear.frame(width: 16) }
+                Text(thread.title).font(.system(size: 13)).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+                if thread.liveStatus != nil { Circle().fill(Theme.live).frame(width: 5, height: 5) }
+                Text(age).font(.system(size: 12)).foregroundStyle(Theme.textTertiary)
+            }
+            .padding(.horizontal, 8).frame(height: 30).contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(SidebarCellStyle(selected: selected))
+        .help("\(thread.engine.displayName) · \(ThreadStore.displayPath(for: thread.cwd))")
+        .accessibilityLabel("\(thread.title)，\(thread.engine.displayName)")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
-
-    private func threadRow(_ thread: ThreadSummary) -> some View {
-        ThreadRow(thread: thread).tag(thread.id).contextMenu { menu(for: thread) }
-    }
-
-    @ViewBuilder private func menu(for thread: ThreadSummary) -> some View {
-        if thread.engine == .codex {
-            Button("用 Claude 接管") { Task { await store.takeoverWithClaude(thread.id) } }
-                .disabled(store.takingOverId != nil || store.controllers[thread.id]?.showsActivity == true
-                          || store.controllers[thread.id]?.isLoadingHistory == true)
-            Divider()
-        }
-        Button("重命名…") { renameText = thread.title; renaming = thread }
-        Button("复制会话 ID") {
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(thread.id, forType: .string)
-        }
-        Button("在访达中显示目录") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: thread.cwd)]) }
-        Divider()
-        Button("从列表中移除") { store.hide(thread.id) }
+    private var age: String {
+        let seconds = max(0, Int(Date().timeIntervalSince(thread.updatedAt)))
+        if seconds < 60 { return "现在" }
+        if seconds < 3600 { return "\(seconds / 60)分" }
+        if seconds < 86400 { return "\(seconds / 3600)时" }
+        if seconds < 604800 { return "\(seconds / 86400)天" }
+        return thread.updatedAt.formatted(.dateTime.month(.twoDigits).day(.twoDigits))
     }
 }
 
-private struct ThreadRow: View {
-    let thread: ThreadSummary
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: thread.engine == .codex ? "terminal" : "sparkle")
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 13)
-            Text(thread.title).font(.system(size: 12)).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
-            if thread.liveStatus != nil {
-                Circle().fill(Theme.live).frame(width: 5, height: 5)
-            }
-        }
-        .padding(.vertical, 3)
-        .help("\(thread.engine.displayName) · \(ThreadStore.displayPath(for: thread.cwd))\n\(relative(thread.updatedAt))")
-        .accessibilityLabel("\(thread.title)，\(thread.engine.displayName)")
-    }
-    private func relative(_ date: Date) -> String {
-        if Calendar.current.component(.year, from: date) != Calendar.current.component(.year, from: Date()) {
-            return date.formatted(date: .abbreviated, time: .omitted)
-        }
-        let f = RelativeDateTimeFormatter(); f.unitsStyle = .short
-        return f.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-private struct SidebarActionStyle: ButtonStyle {
+private struct SidebarCellStyle: ButtonStyle {
+    var selected = false
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(Theme.textPrimary)
-            .background(RoundedRectangle(cornerRadius: 8).fill(configuration.isPressed ? Theme.chipFill : Color.clear))
+        SidebarCellSurface(pressed: configuration.isPressed, selected: selected) { configuration.label }
     }
 }
-
+private struct SidebarCellSurface<Content: View>: View {
+    let pressed: Bool
+    let selected: Bool
+    @ViewBuilder var content: Content
+    @State private var hovered = false
+    var body: some View {
+        content.foregroundStyle(Theme.textPrimary)
+            .background(RoundedRectangle(cornerRadius: 10).fill(selected || pressed ? Theme.selectedFill : hovered ? Theme.hoverFill : Color.clear))
+            .onHover { hovered = $0 }
+    }
+}
 private struct UpdateFailedBanner: View {
     @Environment(ThreadStore.self) private var store
     @State private var hovering = false

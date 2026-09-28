@@ -7,6 +7,7 @@ struct ComposerView: View {
     let controller: ConversationController
     var dropTargeted = false
     @Environment(ThreadStore.self) private var store
+    @Environment(\.colorScheme) private var colorScheme
     @State private var text = ""
     @State private var isComposing = false
     @State private var editorHeight: CGFloat = 22
@@ -26,7 +27,19 @@ struct ComposerView: View {
     private var placeholder: String {
         liveInTerminal ? "发送到终端中正在进行的对话…" : (controller.handoff?.isPending == true ? "告诉 Claude 接下来做什么…" : "描述任务、提问，或添加文件…")
     }
-    private var modelTitle: String { effective.modelName ?? (isCodex ? "Codex 默认模型" : "Claude 默认模型") }
+    private var modelTitle: String {
+        if isCodex, let model = controller.codexModels.first(where: { $0.id == effective.modelId }) { return model.name }
+        return effective.modelName ?? controller.engine.displayName
+    }
+    private var displayedEffort: String {
+        if let effort = effective.effort { return effort }
+        if isCodex {
+            let model = controller.codexModels.first { $0.id == effective.modelId }
+                ?? controller.codexModels.first { $0.isDefault }
+            if let effort = model?.defaultEffort { return effort }
+        }
+        return "默认"
+    }
     private var permissionOptions: [(id: String, title: String)] {
         isCodex ? [("auto", "工作区权限"), ("manual", "逐项询问"), ("plan", "只读模式"), ("bypassPermissions", "完全访问")]
             : PermissionModeOption.all
@@ -49,61 +62,58 @@ struct ComposerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 4) {
             if liveInTerminal {
                 Label("此对话由终端运行，使用终端当前账号；应用内账号选择不改变它。", systemImage: "terminal")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
             }
-            VStack(alignment: .leading, spacing: 14) {
+            if controller.isDraft { contextRow }
+            VStack(alignment: .leading, spacing: 4) {
                 if !controller.attachments.isEmpty {
                     AttachmentStrip(attachments: controller.attachments) { controller.removeAttachment($0) }
+                        .padding(.horizontal, 8)
                 }
                 ComposerTextView(text: $text, isComposing: $isComposing, height: $editorHeight, onSubmit: submit,
                                  onDropFiles: { controller.attach(urls: $0) },
                                  onDropImage: { controller.attach(imageData: $0, name: $1) },
                                  onDropTargeted: { editorDropTargeted = $0 })
-                    .frame(height: min(max(editorHeight, controller.isDraft ? 56 : 36), 220))
+                    .frame(height: min(max(editorHeight, 44), 220))
                     .overlay(alignment: .topLeading) {
                         if text.isEmpty && !isComposing {
                             Text(placeholder)
                                 .font(.system(size: 14))
                                 .foregroundStyle(Theme.placeholder)
-                                .padding(.leading, 3)
-                                .padding(.top, 1)
+                                .frame(height: 20, alignment: .topLeading)
                                 .allowsHitTesting(false)
                         }
                     }
-                HStack(spacing: 7) {
+                    .padding(.horizontal, 12)
+                HStack(spacing: 5) {
                     attachButton
-                    engineMenu
+                    permissionMenu
+                    Spacer(minLength: 8)
                     modelMenu
-                    Spacer(minLength: 4)
+                        .layoutPriority(-1)
                     sendButton
+                        .padding(.leading, 8)
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+            .padding(.top, 8)
+            .background { composerSurface }
+            .overlay {
+                if highlightDrop {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Theme.textPrimary, lineWidth: 1.5)
                 }
             }
-            .padding(.top, 16)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 12)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.composerFill))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(highlightDrop ? Theme.textPrimary : Theme.line, lineWidth: highlightDrop ? 1.5 : 1))
-            HStack(spacing: 10) {
-                folderButton
-                Spacer(minLength: 4)
-                settingsMenu(icon: "checkmark.shield", title: permissionTitle,
-                             options: permissionOptions, selection: controller.settings.permissionMode) { new in
-                    var s = controller.settings; s.permissionMode = new; store.updateSettings(controller.id, s)
-                }
-                settingsMenu(icon: "gauge.with.needle", title: effective.effort ?? "默认强度",
-                             options: effortOptions, selection: controller.settings.effort ?? "") { new in
-                    var s = controller.settings; s.effort = new.isEmpty ? nil : new; store.updateSettings(controller.id, s)
-                }
-            }
-            .padding(.horizontal, 5)
+            if !controller.isDraft { contextRow }
         }
         .alert("指定模型", isPresented: $editingModel) {
             TextField("模型 ID", text: $customModel)
@@ -114,29 +124,49 @@ struct ComposerView: View {
         }
     }
 
-    private var engineMenu: some View {
-        Menu {
-            ForEach([ConversationEngine.claude, .codex], id: \.self) { engine in
-                Button {
-                    store.setDraftEngine(controller.id, engine: engine)
-                } label: {
-                    if controller.engine == engine { Label(engine.displayName, systemImage: "checkmark") }
-                    else { Text(engine.displayName) }
-                }
-            }
-        } label: {
-            Chip(icon: isCodex ? "terminal" : "sparkle", title: controller.engine.displayName, showsChevron: controller.isDraft)
+    private var contextRow: some View {
+        HStack(spacing: 8) {
+            folderButton
+            Spacer(minLength: 0)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .disabled(!controller.isDraft || controller.isWorking || controller.handoff != nil)
-        .help(controller.handoff != nil ? "这段对话由 Claude 接管；原 Codex 对话保留" : (controller.isDraft ? "选择这次对话使用的引擎" : "对话使用 \(controller.engine.displayName)；新建对话可切换引擎"))
-        .accessibilityLabel("对话引擎：\(controller.engine.displayName)")
+        .padding(.horizontal, 4)
+    }
+
+    /// Codex's normal composer surface (forced-colors rules intentionally excluded).
+    @ViewBuilder private var composerSurface: some View {
+        if colorScheme == .dark {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Theme.composerFill.shadow(.inner(color: .white.opacity(0.2), radius: 1)))
+        } else {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Theme.composerFill)
+                .background {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .fill(Color.black.opacity(6.0 / 255))
+                        .padding(-8)
+                        .blur(radius: 40)
+                        .offset(y: 4)
+                }
+                .shadow(color: .black.opacity(10.0 / 255), radius: 4, x: 0, y: 2)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(Color.black.opacity(10.0 / 255), lineWidth: 1)
+                }
+        }
     }
 
     private var modelMenu: some View {
         Menu {
+            Text("对话引擎")
+            ForEach([ConversationEngine.claude, .codex], id: \.self) { engine in
+                Button { store.setDraftEngine(controller.id, engine: engine) } label: {
+                    if controller.engine == engine { Label(engine.displayName, systemImage: "checkmark") }
+                    else { Text(engine.displayName) }
+                }
+                .disabled(!controller.isDraft || controller.isWorking || controller.handoff != nil)
+            }
+            Divider()
+            Text("模型")
             if isCodex {
                 Button("使用 Codex 默认模型") { updateModel("") }
                 ForEach(controller.codexModels, id: \.id) { model in
@@ -155,21 +185,27 @@ struct ComposerView: View {
             }
             Divider()
             Button("指定模型 ID…") { customModel = controller.settings.model ?? ""; editingModel = true }
-        } label: {
-            HStack(spacing: 4) {
-                Text(modelTitle).lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            Divider()
+            Text("思考强度")
+            ForEach(effortOptions, id: \.id) { option in
+                Button {
+                    var settings = controller.settings
+                    settings.effort = option.id.isEmpty ? nil : option.id
+                    store.updateSettings(controller.id, settings)
+                } label: {
+                    if option.id == (controller.settings.effort ?? "") { Label(option.title, systemImage: "checkmark") }
+                    else { Text(option.title) }
+                }
             }
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+        } label: {
+            ComposerControlLabel(title: modelTitle, secondary: displayedEffort, chevron: true)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .disabled(liveInTerminal)
-        .help("模型：\(effective.modelId ?? modelTitle)；更改在下一轮生效")
+        .help("\(controller.engine.displayName) · 模型：\(effective.modelId ?? modelTitle)；新对话可在此切换引擎")
+        .accessibilityLabel("引擎和模型：\(controller.engine.displayName)，\(modelTitle)")
     }
 
     private var sendButton: some View {
@@ -179,13 +215,12 @@ struct ComposerView: View {
             Image(systemName: controller.isWorking ? "stop.fill" : "arrow.up")
                 .font(.system(size: controller.isWorking ? 11 : 15, weight: .semibold))
                 .foregroundStyle(Theme.sendFg)
-                .frame(width: 32, height: 32)
+                .frame(width: 28, height: 28)
                 .background(Circle().fill(Theme.sendFill))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerSendButtonStyle())
         .disabled(!controller.isWorking && !canSend)
-        .opacity(controller.isWorking || canSend ? 1 : 0.3)
         .help(controller.isWorking ? "停止生成（⌘.）" : "发送（⏎）；⇧⏎ 换行")
         .accessibilityLabel(controller.isWorking ? "停止生成" : "发送消息")
     }
@@ -207,11 +242,7 @@ struct ComposerView: View {
             panel.prompt = "添加"; panel.message = "选择要附加的文件、照片或目录"
             if panel.runModal() == .OK { controller.attach(urls: panel.urls) }
         } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 15, weight: .regular))
-                .foregroundStyle(Theme.textSecondary)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
+            ComposerControlLabel(icon: "plus", title: nil, chevron: false)
         }
         .buttonStyle(.plain)
         .help("添加文件、照片或目录（支持拖放和 ⌘V）")
@@ -226,65 +257,74 @@ struct ComposerView: View {
             panel.directoryURL = URL(fileURLWithPath: controller.cwd); panel.prompt = "选择工作目录"
             if panel.runModal() == .OK, let url = panel.url { store.setDraftCwd(controller.id, cwd: url.path) }
         } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "folder").font(.system(size: 11))
-                Text(ThreadStore.displayName(for: controller.cwd)).lineLimit(1).truncationMode(.middle)
-                if controller.isDraft { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            ComposerControlLabel(icon: "folder", title: ThreadStore.displayName(for: controller.cwd), chevron: controller.isDraft)
         }
         .buttonStyle(.plain)
         .disabled(!controller.isDraft)
         .help("工作目录：\(controller.cwd)\(controller.isDraft ? "" : "（会话开始后不能更改）")")
     }
 
-    private func settingsMenu(icon: String, title: String, options: [(id: String, title: String)],
-                              selection: String, onChange: @escaping (String) -> Void) -> some View {
+    private var permissionMenu: some View {
         Menu {
-            ForEach(options, id: \.id) { option in
-                Button { onChange(option.id) } label: {
-                    if option.id == selection { Label(option.title, systemImage: "checkmark") }
+            Text("权限模式")
+            ForEach(permissionOptions, id: \.id) { option in
+                Button {
+                    var settings = controller.settings
+                    settings.permissionMode = option.id
+                    store.updateSettings(controller.id, settings)
+                } label: {
+                    if option.id == controller.settings.permissionMode { Label(option.title, systemImage: "checkmark") }
                     else { Text(option.title) }
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 10))
-                Text(title).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(Theme.textSecondary)
-            .padding(.vertical, 4)
+            ComposerControlLabel(icon: "checkmark.shield", title: nil, chevron: false)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
         .disabled(liveInTerminal)
-        .help("\(title)；更改在下一轮生效")
+        .help("\(permissionTitle)；更改在下一轮生效")
+        .accessibilityLabel("权限模式：\(permissionTitle)")
     }
 }
 
-struct Chip: View {
-    var icon: String
-    var title: String
-    var showsChevron = false
+/// Own the disabled treatment so SwiftUI's plain style does not dim the 50% source opacity twice.
+private struct ComposerSendButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.5)
+    }
+}
+
+private struct ComposerControlLabel: View {
+    var icon: String? = nil
+    var title: String?
+    var secondary: String? = nil
+    var chevron = false
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 11, weight: .medium))
-            Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-            if showsChevron { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)) }
+        HStack(spacing: 4) {
+            if let icon {
+                Image(systemName: icon).font(.system(size: title == nil ? 16 : 13, weight: .regular))
+            }
+            if let title {
+                Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            }
+            if let secondary {
+                Text(secondary).font(.system(size: 13)).lineLimit(1).fixedSize()
+            }
+            if chevron { Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium)) }
         }
-        .foregroundStyle(Theme.textPrimary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.chipFill))
+        .foregroundStyle(Theme.textSecondary)
+        .padding(.horizontal, title == nil ? 0 : 6)
+        .frame(minWidth: 28, minHeight: 28)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(hovered ? Theme.chipFill : .clear))
         .contentShape(Rectangle())
+        .onHover { hovered = $0 }
     }
 }
 
@@ -305,12 +345,17 @@ struct ComposerTextView: NSViewRepresentable {
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
         textView.font = .systemFont(ofSize: 14)
-        textView.textColor = .labelColor
+        textView.textColor = NSColor(Theme.textPrimary)
         textView.isRichText = false
         textView.allowsUndo = true
         textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 0, height: 1)
-        textView.textContainer?.lineFragmentPadding = 3
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.minimumLineHeight = 20
+        paragraphStyle.maximumLineHeight = 20
+        textView.defaultParagraphStyle = paragraphStyle
+        textView.typingAttributes[.paragraphStyle] = paragraphStyle
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -335,7 +380,11 @@ struct ComposerTextView: NSViewRepresentable {
         scroll.borderType = .noBorder
         context.coordinator.textView = textView
         context.coordinator.observeResize(of: scroll)
-        DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
+        DispatchQueue.main.async { [weak textView] in
+            guard NSApp.activationPolicy() != .prohibited, let textView,
+                  let window = textView.window, window.isKeyWindow else { return }
+            window.makeFirstResponder(textView)
+        }
         // 自动化验证用：-testMarkedText "ciao" 模拟输入法组字（输入法走的就是这个方法），不发全局键盘事件。
         // 等窗口成为 key、输入上下文激活之后再塞，否则激活过程会把没有输入法会话撑腰的组字悄悄清掉。
         if let marked = UserDefaults.standard.string(forKey: "testMarkedText"), !marked.isEmpty {

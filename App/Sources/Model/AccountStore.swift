@@ -141,6 +141,29 @@ final class AccountStore {
     @ObservationIgnored private var blockedManifestPaths: Set<String> = []
     @ObservationIgnored private var legacyProviderBackup: SettingsBackup?
 
+    /// Identity metadata only; no secrets, Keychain reads, or account discovery occur during construction.
+    struct Snapshot: Sendable {
+        var accounts: [ClaudeAccount] = []
+        var activeId: String? = nil
+        var providers: [APIProvider] = []
+        var activeProviderId: String? = nil
+        var codexAccounts: [CodexAccount] = []
+        var activeCodexId: String? = nil
+    }
+
+    init() {}
+
+    init(snapshot: Snapshot) {
+        self.accounts = snapshot.accounts
+        self.activeId = snapshot.activeId
+        self.providers = snapshot.providers
+        self.activeProviderId = snapshot.activeProviderId
+        self.codexAccounts = snapshot.codexAccounts
+        self.activeCodexId = snapshot.activeCodexId
+        self.isLoggedOut = snapshot.activeId == nil && snapshot.activeProviderId == nil
+        self.loaded = true
+    }
+
     var active: ClaudeAccount? { accounts.first { $0.id == activeId } }
     var activeProvider: APIProvider? { providers.first { $0.id == activeProviderId } }
     var activeCodex: CodexAccount? { codexAccounts.first { $0.id == activeCodexId } }

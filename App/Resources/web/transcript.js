@@ -35,6 +35,14 @@
   }
 
   function decorateCode(root, done) {
+    // Keep the native Codex table geometry while allowing wide content to scroll.
+    root.querySelectorAll('table').forEach((table) => {
+      if (table.parentElement.classList.contains('table-scroll')) return;
+      const scroller = document.createElement('div');
+      scroller.className = 'table-scroll';
+      table.replaceWith(scroller);
+      scroller.appendChild(table);
+    });
     root.querySelectorAll('pre').forEach((pre) => {
       if (pre.closest('.codeblock')) return;
       const code = pre.querySelector('code');
@@ -43,7 +51,7 @@
       wrap.className = 'codeblock';
       const head = document.createElement('div');
       head.className = 'codeblock-head';
-      head.innerHTML = '<span>' + escapeHtml(lang || '代码') + '</span><button type="button" data-copy>复制</button>';
+      head.innerHTML = '<span>' + escapeHtml(lang || '代码') + '</span><button type="button" data-copy aria-label="复制代码" title="复制代码"><span class="copy-symbol" aria-hidden="true"></span></button>';
       pre.replaceWith(wrap);
       wrap.appendChild(head);
       wrap.appendChild(pre);
@@ -341,8 +349,14 @@
     if (btn) {
       const code = btn.closest('.codeblock').querySelector('pre');
       post({ type: 'copy', text: code ? code.textContent : '' });
-      btn.textContent = '已复制';
-      setTimeout(() => { btn.textContent = '复制'; }, 1200);
+      btn.classList.add('copied');
+      btn.setAttribute('aria-label', '已复制');
+      btn.title = '已复制';
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.setAttribute('aria-label', '复制代码');
+        btn.title = '复制代码';
+      }, 1200);
     }
   });
 

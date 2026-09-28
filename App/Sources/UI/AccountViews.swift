@@ -19,31 +19,33 @@ struct AccountFooter: View {
     }
     var body: some View {
         Menu { AccountMenuItems() } label: {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 Text(String(title.prefix(1)).uppercased())
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Theme.textPrimary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 18, height: 18)
                     .background(Circle().fill(Theme.chipFill))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1).truncationMode(.middle)
-                    Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.system(size: 14)).lineLimit(1).truncationMode(.middle)
+                    if accounts.busy != nil || accounts.switchNote != nil {
+                        Text(subtitle).font(.system(size: 11)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 3)
                 if accounts.busy != nil { ProgressView().controlSize(.mini) }
-                else { Image(systemName: "chevron.up.chevron.down").font(.system(size: 9)).foregroundStyle(Theme.textSecondary) }
+                else { WorkspaceIcon(.more).foregroundStyle(Theme.textTertiary) }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Theme.chipFill : Color.clear))
+            .frame(minHeight: 36)
+            .background(RoundedRectangle(cornerRadius: 10).fill(hovering ? Theme.hoverFill : Color.clear))
             .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .onHover { hovering = $0 }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
         .background(Theme.sidebar)
         .help(accounts.switchNote ?? "切换只影响 Claudex Shell。需要同步登录态时，选择「推送至终端」或「推送至 Codex App」。")
         .onChange(of: accounts.lastError) { _, new in showingError = new != nil }

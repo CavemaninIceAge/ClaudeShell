@@ -72,6 +72,25 @@ final class ThreadStore {
     private var overridesURL: URL { supportDir.appendingPathComponent("threads.json") }
     private var defaultsData: Data? { UserDefaults.standard.data(forKey: "defaultThreadSettings") }
 
+    /// A preloaded, in-memory workspace for offline rendering and deterministic view tests.
+    /// Construction performs no discovery, persistence, timer registration, or credential access.
+    struct Snapshot {
+        var records: [SessionRecord] = []
+        var drafts: [ThreadSummary] = []
+        var controllers: [ConversationController] = []
+        var selectedId: String?
+    }
+
+    init() {}
+
+    init(snapshot: Snapshot) {
+        self.records = Dictionary(uniqueKeysWithValues: snapshot.records.map { ($0.id, $0) })
+        self.drafts = Dictionary(uniqueKeysWithValues: snapshot.drafts.map { ($0.id, $0) })
+        self.controllers = Dictionary(uniqueKeysWithValues: snapshot.controllers.map { ($0.id, $0) })
+        self.selectedId = snapshot.selectedId
+        self.bootstrapped = true
+    }
+
     // MARK: - 派生
 
     var selectedController: ConversationController? {

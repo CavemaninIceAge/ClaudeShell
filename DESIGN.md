@@ -1,86 +1,62 @@
 ---
 name: Claudex Shell
-description: macOS 原生的 Claude / Codex 工作区，采用 Codex 的中性侧栏、居中对话与任务输入框
+description: A native SwiftUI reconstruction of the installed Codex desktop workspace
 colors:
-  paper: "#FFFFFF"
-  paper-dark: "#212121"
-  sidebar: "#F7F7F7"
-  sidebar-dark: "#191919"
-  sidebar-input: "#EEEEEE"
-  sidebar-input-dark: "#242424"
-  card: "#F7F7F7"
-  card-dark: "#2A2A2A"
-  ink: "#0D0D0D"
-  ink-dark: "#ECECEC"
-  secondary: "#5D5D5D"
-  secondary-dark: "#B4B4B4"
-  line: "#E3E3E3"
-  line-dark: "#3A3A3A"
-  chip: "#F2F2F2"
-  chip-dark: "#333333"
+  main: "#FFFFFF"
+  main-dark: "#181818"
+  sidebar: "#F6F6F6"
+  sidebar-dark: "#141414"
+  composer: "#FFFFFF"
+  composer-dark: "#363636"
+  ink: "#1A1C1F"
+  ink-dark: "#DFDFDF"
 typography:
-  ui: "SF Pro / PingFang SC, 12–13pt"
-  start-title: "SF Pro / PingFang SC, 28pt medium, -0.6pt tracking"
-  body: "SF Pro / PingFang SC, 14px / 1.65"
-  code: "SF Mono / Menlo, 12.5px / 1.55"
-rounded:
-  control: "8pt"
-  permission: "14pt"
-  message: "18px"
-  composer: "20pt"
+  ui: "SF Pro / PingFang SC, 13pt; section headings 14pt medium"
+  hero: "28pt regular"
+  body: "System sans 14px / 1.625"
+  code: "SF Mono / Menlo 12px / 20px"
 spacing:
-  sidebar: "260pt ideal; 230–360pt resizable"
-  transcript: "780pt column + 24pt gutters"
-  start-composer: "720pt maximum; 32pt outer gutters"
-  turn-gap: "28px"
+  sidebar: "275pt default, 240–520pt resizable"
+  toolbar: "46pt"
+  column: "768pt including 16pt horizontal gutters; content 736pt"
+  sidebar-row: "30pt, horizontal inset 8pt, icon 16pt"
+rounded:
+  sidebar-cell: "10pt"
+  composer: "22pt"
+  user-message: "22px"
+  code: "20px"
 ---
 
-# Claudex Shell 设计系统
+# Codex 桌面界面复刻
 
-用户指定视觉参考为 Codex 桌面工作区。此次实现沿用原生 macOS 分栏、系统字体和单色灰阶，强化相同的信息层级与操作位置。没有取得 Codex 的像素级参考截图，因此不宣称已完成像素级一致性。
+用户明确要求与 Codex 界面一致。本次以本机 `com.openai.codex` 26.924.22138 的静态样式、组件结构与中文文案作为依据，采用原生 SwiftUI / AppKit 重新实现。详细测量及出处记录在 [参考规格](docs/codex-ui-reference.md)。不复制 Codex 的程序代码或品牌资产，不读取实际聊天、账号主题配置或私有数据库。
 
-## 工作区结构
+## 窗口与侧栏
 
-- 原生 `NavigationSplitView`：侧栏默认 260pt，主区为居中单列。浅色侧栏略灰，深色侧栏比主区更暗；不添加装饰性玻璃、渐变或彩色品牌区。
-- 侧栏从上至下为「新对话」及引擎菜单、搜索输入框、「项目 / 最近」视图切换、对话列表、账号菜单。刷新使用真实扫描状态。
-- 项目视图按目录分组，可折叠；项目的右键菜单分别新建 Claude 或 Codex 对话。最近视图合并所有项目并按更新时间排序。搜索同时匹配标题和路径。
-- 对话行使用统一 SF Symbols：`sparkle` 表示 Claude，`terminal` 表示 Codex。终端中运行的 Claude 对话保留绿点。
-- 标题和路径在原生工具栏显示；模型、引擎、强度与已知花费在右侧显示。界面不出现无功能的自动化、技能、Git 或设置导航。
+取消 `NavigationSplitView` 的系统玻璃工具栏；内容延伸至透明标题栏下，保留系统原生窗口按钮。工作区顶部为 46pt 单行：左侧标题与项目、右侧打开目录及会话操作菜单。标题栏拖动仅响应用户自己的操作。
 
-## 新对话与输入
+侧栏默认 275pt，最小 240pt、最大 520pt，并为主区保留至少 320pt。分隔线可拖动，侧栏可收起，⌃⌘S 切换显示。导航是两条 30pt 普通行：「新聊天」和「搜索对话」。搜索可通过 ⌘K 打开。
 
-新对话由「今天想做些什么？」和真正可用的输入框构成，整体垂直居中略偏上。相同 `ComposerView` 用于新对话和已有对话，支持输入法、附件、拖放、粘贴、停止和键盘快捷键。
+「已固定」「最近」「项目」使用并列分区；没有固定项时不显示空分区。对话行 13pt，尾部为 12pt 相对时间，选中和悬停使用中性灰底；项目可折叠，保留引擎和接管右键操作。固定信息只存在本应用的界面偏好中，不改写原生会话。底部账号菜单采用 18pt 圆形头像与 14pt 单行名称；仅在操作中或有回执时增加状态行。
 
-输入框只有一条中性描边，没有叠加阴影。内部 16pt 水平留白、20pt 连续圆角；输入区域下方为附件按钮、引擎、模型与 32pt 圆形发送按钮。工作目录、权限和强度放在卡片外的独立控制行，避免最小窗口宽度下过长的一排胶囊。
+## 新聊天和输入框
 
-引擎可在第一条消息发送前切换，历史对话固定引擎。模型来自已知 Claude 列表或 Codex 的 `model/list`，允许填写自定义模型 ID。未连接 Codex 时明确显示「Codex 默认模型」，不虚构一个已选模型。
+空态标题使用 Codex 中文「我们要构建什么？」；有目录时显示带下划线项目名称的对应文案。28pt 常规字重。标题区域最小高 112pt，与下一部分间距 24pt。输入区锚定窗口高度约 42% 的位置。
 
-工作中的发送键变为停止键。没有可发送内容时发送键禁用。拖放只增强输入框描边。终端中正在运行的对话必须显示「此对话由终端运行，使用终端当前账号；应用内账号选择不改变它。」
+正文与输入区共同使用 768pt 外列宽，其中左右各 16pt 留白，实际最大内容宽 736pt。输入框圆角 22pt，编辑区最小高 44pt、行高 20pt、水平留白 12pt。普通控件与发送按钮 28pt，禁用发送按钮为 50% 不透明度。浅色按原始多层细阴影实现；深色使用 #363636 背景与细微内侧亮边。
 
-## 账号与推送
+左侧为附件和权限，右侧为模型/思考强度菜单及发送/停止。双引擎切换放在模型菜单内，保留新会话才能换引擎的约束。Codex 空态的工作目录工具行位于输入框上方；已有对话位于下方。保留原 NSTextView 输入法、回车发送、Shift–回车换行、附件与拖放逻辑；离屏或非活动窗口不会主动取得输入焦点。
 
-账号菜单是原生菜单，固定在左下角；头像由当前引擎所选账号的首字母生成。菜单顶部明确「切换账号 · 仅在 Claudex Shell 内生效」。Claude、GLM / API、Codex 分组显示，各自选中态保留。
+## 正文
 
-- 「保存本机登录态（Claude / GLM / Codex）」用于保存当前机器的登录信息。
-- 「推送至终端」子菜单分别列出 Claude Code 与 Codex CLI，包含选中账号名称。Codex CLI 和 Codex App 共用本机 Codex 登录态，这一关系写在菜单里。
-- 「推送至 Codex App」显示具体 Codex 账号，并注明 App 可能需要重新启动；工具不会替用户重启应用。
-- 推送前保存旧状态，存在备份时显示「撤回上次推送」。错误用原生 alert 呈现，操作回执显示在账号行，完整回执可悬停查看。
-- 添加 API 提供方的说明只陈述本机钥匙串和 App 内生效范围；不得再声称普通切换会修改终端。
+14px 系统字，行高 1.625；相邻段落间距 14px。助手正文无气泡，用户消息在右侧，最大宽 70%，22px 圆角，垂直 10px、水平 16px 留白。代码块为 20px 圆角、细边与灰底，工具栏高 48px，等宽字体 12px / 20px，复制按钮为 36px 圆形、16px 图标。表格仅使用横向分隔线并允许水平滚动。思考与工具步骤继续沿用可折叠的原生会话展示。
 
-## 跨引擎接管
+## 功能边界
 
-已有 Codex 对话的工具栏与侧栏右键菜单提供「用 Claude 接管」。源对话正在生成、加载历史或已经在准备接管时禁用操作。接管建立新的 Claude 原生会话，并带入原对话的可移植上下文；不假装 Claude 能原生恢复 Codex 的会话 ID。
+账号选择、推送至终端、推送至 Codex App、撤回推送仍在账号菜单中；应用内选择与外部推送的语义不变。Claude 接管 Codex 对话移入会话操作菜单和侧栏右键菜单。接管来源条保留。没有加入无实现的语音、插件、自动化或 Git 按钮。
 
-接管后的对话顶部保留单行来源条：「接管自 Codex · 原标题」及「查看原对话」。草稿标题为「继续这段对话」，输入占位为「告诉 Claude 接下来做什么…」，引擎固定为 Claude。没有自动发送用户尚未输入的续接任务。原 Codex 对话保留，来源关系持久化；错误通过工作区原生 alert 展示。
+## 验证
 
-## 对话排版
+`scripts/ui-preview/render.sh` 通过纯内存 snapshot 初始化器渲染实际 `WorkspaceView`，覆盖空态和已有对话、1200×800 与 880×560、浅色与深色。图片写入 `.impeccable/review/workspace/`，附布局和不可见窗口状态记录。该工具不启动真实应用、不加载登录态、不调用引擎、不显示或激活任何窗口。WebKit 快照与其原生视图的实际位置合成，不另写替代界面。
 
-助手正文无气泡，用户消息为右对齐灰底圆角块。Markdown 使用 14px / 1.65 系统字，代码采用 SF Mono。思考、工具步骤可折叠；折叠层级只用 1px 竖线。
-
-正文与原生输入框共享 780pt 列宽。代码和表格可横向滚动；狭窄窗口的用户消息最大宽度为 90%。键盘焦点、选区、滚动条和降低动态效果均有对应样式。语义色限于错误、警告、运行状态及代码语法高亮。
-
-## 原生交互和验证边界
-
-`NSTextView` 保留输入法组字、撤销、拖放与附件处理。回车发送，Shift–回车换行；⌘N 新建、⌘R 刷新、⌘. 停止，账号快捷键沿用 ⌃1…⌃9。目录、附件和登录交互仅由用户主动操作触发。
-
-开发验证不得打开或前置用户窗口、控制鼠标键盘或使用 Chrome。离屏原生视图和 `WKWebView` 快照必须设置 `.prohibited` 激活策略，不对窗口执行 order/front/key 操作，不执行实际账号同步。没有原生屏幕参考时，布局截图只能证明本应用渲染质量，不能证明与 Codex 像素一致。
+参考来源是安装包静态资源，没有读取用户当前窗口的截图或主题设置。因此可以验证默认布局参数和渲染质量，不把结果描述成已验证的逐像素一致；系统窗口材质与 SF 字形渲染可能和 Electron 有差异。

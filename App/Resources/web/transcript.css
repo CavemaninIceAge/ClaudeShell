@@ -2,16 +2,19 @@
 :root {
   color-scheme: light dark;
   --bg: #ffffff;
-  --fg: #0d0d0d;
-  --fg-2: #5d5d5d;
-  --fg-3: #6b6b6b;
-  --line: #e3e3e3;
-  --bubble: #f1f1f1;
-  --panel: #f7f7f7;
-  --code-bg: #f5f5f5;
-  --code-fg: #1f1f1f;
-  --inline-code-bg: #f0f0f0;
-  --link: #0d0d0d;
+  --fg: #1a1c1f;
+  --fg-2: rgba(26, 28, 31, 0.695);
+  --fg-3: rgba(26, 28, 31, 0.495);
+  --line: rgba(26, 28, 31, 0.078);
+  --line-strong: rgba(26, 28, 31, 0.117);
+  --line-subtle: rgba(26, 28, 31, 0.049);
+  --ghost-hover: rgba(26, 28, 31, 0.0535);
+  --bubble: color-mix(in oklab, #1a1c1f 5%, transparent);
+  --panel: #f6f6f6;
+  --code-bg: var(--ghost-hover);
+  --code-fg: var(--fg);
+  --inline-code-bg: color-mix(in srgb, var(--ghost-hover) 60%, var(--fg) 6%);
+  --link: #1a1c1f;
   --warn: #b45309;
   --danger: #b91c1c;
   --selection: rgba(13, 13, 13, 0.14);
@@ -26,17 +29,20 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #212121;
-    --fg: #ececec;
-    --fg-2: #b4b4b4;
-    --fg-3: #9a9a9a;
-    --line: #3a3a3a;
-    --bubble: #2f2f2f;
-    --panel: #2a2a2a;
-    --code-bg: #181818;
-    --code-fg: #e8e8e8;
-    --inline-code-bg: #333333;
-    --link: #ececec;
+    --bg: #181818;
+    --fg: #dfdfdf;
+    --fg-2: rgba(255, 255, 255, 0.71);
+    --fg-3: rgba(255, 255, 255, 0.498);
+    --line: rgba(255, 255, 255, 0.084);
+    --line-strong: rgba(255, 255, 255, 0.156);
+    --line-subtle: rgba(255, 255, 255, 0.042);
+    --ghost-hover: rgba(255, 255, 255, 0.078);
+    --bubble: color-mix(in oklab, #dfdfdf 5%, transparent);
+    --panel: #141414;
+    --code-bg: var(--ghost-hover);
+    --code-fg: var(--fg);
+    --inline-code-bg: color-mix(in srgb, var(--ghost-hover) 60%, var(--fg) 6%);
+    --link: #dfdfdf;
     --warn: #f5b453;
     --danger: #f87171;
     --selection: rgba(236, 236, 236, 0.22);
@@ -52,23 +58,25 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: transparent; }
-/* 滚动条设成"总是显示"时会占掉右边 15pt，两边都留出来，内容列才和 SwiftUI 侧的输入卡同轴。 */
-html { overflow-y: auto; scrollbar-gutter: stable both-edges; }
+/* The native composer is outside WebKit, so its transcript viewport must not reserve
+   a separate scrollbar gutter. Scrolling stays native; nested code/table scrollbars remain. */
+html { overflow-y: auto; scrollbar-gutter: auto; scrollbar-width: none; }
+html::-webkit-scrollbar { display: none; width: 0; height: 0; }
 body {
   color: var(--fg);
-  font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font: 14px/1.625 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
 ::selection { background: var(--selection); }
-a { color: var(--link); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; text-decoration-color: var(--fg-3); }
+a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; text-decoration-thickness: 1px; text-decoration-color: var(--fg-3); }
 a:hover { text-decoration-color: var(--fg); }
 
-/* 内容列 780px，和 SwiftUI 侧输入卡（Theme.columnWidth）同宽同轴；24px 是两边的呼吸边。 */
+/* Codex Electron 的 48rem 列包含两侧 16px 留白，实际正文宽度上限 736px。 */
 #root {
-  max-width: 828px;
+  max-width: 768px;
   margin: 0 auto;
-  padding: 20px 24px 12px;
+  padding: 20px 16px 12px;
 }
 
 /* 图标：SF Symbols 导出的蒙版（scripts/export-symbols.swift），用 currentColor 上色，和原生侧同一套。 */
@@ -86,11 +94,11 @@ a:hover { text-decoration-color: var(--fg); }
   mask-size: contain;
 }
 /* 各图标的 mask-image 在生成的 icons.css 里。 */
-#list { display: flex; flex-direction: column; gap: 28px; }
+#list { display: flex; flex-direction: column; gap: 16px; }
 
 /* 用户消息：右侧的灰色圆角块；附件（图片缩略图 / 文件片）挂在它上面，一样靠右 */
 .item.user { display: flex; justify-content: flex-end; }
-.item.user .user-wrap { max-width: 78%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
+.item.user .user-wrap { max-width: 70%; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; min-width: 0; }
 .attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; }
 .att-image {
   display: block;
@@ -118,11 +126,11 @@ a:hover { text-decoration-color: var(--fg); }
 .item.user .bubble {
   max-width: 100%;
   background: var(--bubble);
-  border-radius: 18px;
-  padding: 9px 14px;
+  border-radius: 22px;
+  padding: 10px 16px;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.55;
+  line-height: 1.625;
 }
 
 /* 助手：无边框正文 */
@@ -130,40 +138,65 @@ a:hover { text-decoration-color: var(--fg); }
 .text { min-width: 0; }
 .text > :first-child { margin-top: 0; }
 .text > :last-child { margin-bottom: 0; }
-.text p { margin: 0 0 0.85em; }
-.text h1, .text h2, .text h3, .text h4 { margin: 1.3em 0 0.5em; line-height: 1.3; font-weight: 600; }
-.text h1 { font-size: 1.35em; }
-.text h2 { font-size: 1.2em; }
-.text h3 { font-size: 1.08em; }
-.text h4 { font-size: 1em; }
-.text ul, .text ol { margin: 0 0 0.85em; padding-left: 1.4em; }
-.text li { margin: 0.2em 0; }
-.text li > p { margin: 0.2em 0; }
-.text blockquote { margin: 0 0 0.85em; padding: 2px 0 2px 12px; border-left: 1px solid var(--line); color: var(--fg-2); }
-.text hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+.text { --markdown-space: 3.5px; overflow-wrap: anywhere; }
+.text p { margin: 0 0 3.5px; }
+.text > p:not(:first-child) { margin-top: 7px; }
+.text > p + p { margin-block: 14px; }
+.text h1, .text h2, .text h3, .text h4 { font-weight: 600; }
+.text h1 { margin: 14px 0 7px; font-size: 1.5em; line-height: 28px; }
+.text h2 { margin: 14px 0 3.5px; font-size: 1.25em; line-height: 24.5px; }
+.text h3 { margin: 14px 0 3.5px; font-size: 1.125em; line-height: 24.5px; }
+.text h4 { margin: 14px 0 0; font-size: 1em; line-height: 21px; }
+.text h5, .text h6 { margin: 0; font-size: 1em; line-height: inherit; }
+.text > :is(h1,h2,h3,h4) + p, .text > p + :is(ul,ol) { margin-top: 0; }
+.text ul, .text ol { margin: 0; padding-left: 22.75px; list-style-position: outside; }
+.text li { margin: 0; padding-left: 5.25px; }
+.text li > p { margin: 0; }
+.text li > p + p { margin-top: 14px; }
+.text blockquote { position: relative; margin: 0 0 7px; padding: 7px 0 7px 21px; border: 0; line-height: 21px; }
+.text blockquote::after { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 3.5px; border-radius: 1.75px; background: var(--line-strong); }
+.text blockquote p { margin: 0; }
+.text hr { border: 0; border-top: 1px solid var(--line-strong); margin: 24.5px 0; }
 .text strong { font-weight: 600; }
-.text table { border-collapse: collapse; margin: 0.4em 0 1em; font-size: 13px; display: block; max-width: 100%; overflow-x: auto; }
-.text th, .text td { border: 1px solid var(--line); padding: 5px 10px; text-align: left; vertical-align: top; }
-.text th { background: var(--panel); font-weight: 600; }
-.text td { font-variant-numeric: tabular-nums; }
+.table-scroll { margin-top: 14px; width: 100%; overflow-x: auto; scrollbar-width: thin; }
+.text table { border-collapse: separate; border-spacing: 0; table-layout: auto; width: fit-content; min-width: 100%; margin: 0; font-size: max(12px, .875em); font-variant-numeric: tabular-nums; }
+.text th, .text td { padding-right: 21px; text-align: left; vertical-align: top; border: 0; }
+.text th { padding-top: 7px; padding-bottom: 7px; border-bottom: 1px solid var(--line-strong); font-weight: 600; line-height: 14px; background: transparent; }
+.text td { padding-top: 8.75px; padding-bottom: 8.75px; }
+.text tbody tr:not(:last-child) td { border-bottom: 1px solid var(--line-subtle); }
+.text th:last-child { padding-right: 35px; }
+.text td:last-child { padding-right: 0; }
+.text tbody tr:last-child td { padding-bottom: 21px; }
+.text > :first-child { margin-top: 0; }
+.text > :last-child { margin-bottom: 0; }
 .text code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 0.86em;
+  font-size: 0.92em;
   background: var(--inline-code-bg);
-  border-radius: 5px;
-  padding: 1px 5px;
+  border-radius: 6px;
+  padding: 1px 6px;
 }
 .text pre { margin: 0; }
-.text pre code { display: block; background: transparent; padding: 0; font-size: 12.5px; line-height: 1.55; }
+.text pre code { display: block; background: transparent; padding: 0; font-size: 12px; line-height: 20px; }
 .text img { max-width: 100%; border-radius: 8px; }
 
 /* 代码块：头部语言名 + 复制 */
-.codeblock { margin: 0.4em 0 1em; border: 1px solid var(--line); border-radius: 10px; background: var(--code-bg); overflow: hidden; }
-.codeblock-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 10px 5px 12px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--fg-2); }
-.codeblock-head button { font: inherit; color: var(--fg-2); background: transparent; border: 0; padding: 2px 6px; border-radius: 5px; cursor: default; opacity: 0; transition: opacity 120ms ease-out; }
-.codeblock:hover .codeblock-head button, .codeblock-head button:focus-visible { opacity: 1; }
-.codeblock-head button:hover { background: var(--inline-code-bg); color: var(--fg); }
-.codeblock pre { padding: 10px 12px; overflow-x: auto; color: var(--code-fg); }
+.codeblock { margin: 1.25em 0; border: 1px solid var(--line-subtle); border-radius: 20px; corner-shape: superellipse(1.1); background: var(--code-bg); overflow: hidden; }
+.codeblock-head { display: flex; align-items: center; justify-content: space-between; min-height: 48px; gap: 8px; padding: 6px 6px 6px 16px; font-size: 13px; font-weight: 500; color: var(--fg); }
+.codeblock-head button { display: inline-flex; align-items: center; justify-content: center; font: inherit; color: var(--fg-2); background: transparent; border: 0; width: 36px; height: 36px; padding: 0; border-radius: 50%; cursor: default; opacity: 1; transition: background-color 120ms ease-out; }
+.codeblock-head button:hover { background: var(--ghost-hover); color: var(--fg); }
+.copy-symbol { position: relative; width: 16px; height: 16px; }
+.copy-symbol::before, .copy-symbol::after { content: ""; position: absolute; border: 1.25px solid currentColor; border-radius: 2px; width: 9px; height: 11px; }
+.copy-symbol::before { left: 2px; top: 1px; border-right: 0; border-bottom: 0; }
+.copy-symbol::after { left: 5px; top: 4px; }
+.copied .copy-symbol::before { display: none; }
+.copied .copy-symbol::after { left: 4px; top: 1px; width: 6px; height: 11px; border: 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; border-radius: 0; transform: rotate(45deg); }
+.codeblock-head button.copied { opacity: 1; }
+.codeblock pre { padding: 0 16px 12px; overflow-x: auto; color: var(--code-fg); }
+@media (min-width: 768px) {
+  .codeblock-head { padding-left: 20px; }
+  .codeblock pre { padding-inline: 20px; }
+}
 
 /* 思考 / 步骤：折叠行 */
 details.thinking, details.steps { min-width: 0; }
@@ -234,9 +267,7 @@ body { caret-color: var(--fg); }
 ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--fg-2) 45%, transparent); border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 @media (max-width: 560px) {
-  #root { padding: 18px 20px 12px; }
-  .item.user .user-wrap { max-width: 90%; }
-  .text table { font-size: 12px; }
+  #root { padding: 18px 16px 12px; }
   .att-image { max-width: 220px; }
 }
 @media (prefers-reduced-motion: reduce) {

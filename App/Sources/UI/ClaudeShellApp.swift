@@ -1,16 +1,8 @@
 import AppKit
 import SwiftUI
 
-// 方向契约（impeccable · code-first · 用户钦定"完全参照 Codex"，未走方向抽签）
-// THESIS: 这是终端里那个 Claude Code 的窗口，不是另一个聊天客户端。拒绝的默认版式：左右对齐的双色气泡流。
-// OWN-WORLD: Codex 桌面版的灰白世界——白/深灰单色地、系统字、无边框正文、灰色圆角的用户消息、
-//            一枚 16pt 圆角的输入卡、折叠成一行的"思考"和"已完成 N 步"。没有主题色，只有黑白与一枚陶土橙的图标。
-// STORY: 点 Dock 图标 → 居中的问候 + 输入卡 → 敲回车 → 看到思考、工具步骤、Markdown 回答依次出现 → 左侧切另一个对话继续。
-// FIRST VIEWPORT: 左 264pt 原生侧栏（"新对话"按钮、按项目分组的会话）；右侧居中 780pt 单列：
-//                 顶部问候语 24pt，其下一张输入卡（占位文字、目录/模型/权限三枚胶囊、右下黑色圆形发送键）。
-// FORM: canon——Codex 桌面版对话壳，候选清单第 1 位；brief 钦定，无 seed key。
-// FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict,
-//         DESIGN.md, and every shipping raster carrying its provenance
+// Reimplemented from the installed Codex desktop's measured layout and color tokens.
+// Native engine behavior and account isolation stay in the existing models.
 
 @main
 struct ClaudexShellApp: App {
@@ -25,7 +17,7 @@ struct ClaudexShellApp: App {
                 .tint(Theme.textPrimary)
                 .frame(minWidth: 880, minHeight: 560)
         }
-        .windowToolbarStyle(.unified)
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 800)
         .commands {
             CommandGroup(replacing: .appTermination) {

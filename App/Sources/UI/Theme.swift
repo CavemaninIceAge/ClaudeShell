@@ -3,24 +3,39 @@ import SwiftUI
 
 /// 和 web/transcript.css 里的 token 一一对应；改一处要改两处。
 enum Theme {
-    static let columnWidth: CGFloat = 780
+    static let columnWidth: CGFloat = 768
+    static let sidebarWidth: CGFloat = 275
+    static let toolbarHeight: CGFloat = 46
+    static let titlebarHeight: CGFloat = 44
+    static let controlSize: CGFloat = 28
 
-    static let sidebar = dynamic("#F7F7F7", "#191919")
+    static let sidebar = dynamic("#F6F6F6", "#141414")
     static let sidebarInput = dynamic("#EEEEEE", "#242424")
-    static let background = dynamic("#FFFFFF", "#212121")
-    static let composerFill = dynamic("#FFFFFF", "#2A2A2A")
-    static let cardFill = dynamic("#F7F7F7", "#2A2A2A")
-    static let line = dynamic("#E3E3E3", "#3A3A3A")
-    static let textPrimary = dynamic("#0D0D0D", "#ECECEC")
-    static let textSecondary = dynamic("#5D5D5D", "#B4B4B4")
-    static let placeholder = dynamic("#6B6B6B", "#9A9A9A")
+    static let background = dynamic("#FFFFFF", "#181818")
+    static let composerFill = dynamic("#FFFFFF", "#363636")
+    static let cardFill = dynamic("#F4F4F4", "#242424")
+    static let line = inkOpacity(light: 0.078, dark: 0.084)
+    static let sidebarSeparator = inkOpacity(light: 0.04, dark: 0.05)
+    static let hoverFill = inkOpacity(light: 0.04, dark: 0.055)
+    static let selectedFill = inkOpacity(light: 0.07, dark: 0.085)
+    static let textPrimary = dynamic("#1A1C1F", "#DFDFDF")
+    static let textSecondary = inkOpacity(light: 0.695, dark: 0.71)
+    static let textTertiary = inkOpacity(light: 0.495, dark: 0.498)
+    static let placeholder = inkOpacity(light: 0.495, dark: 0.498)
     static let iconMuted = dynamic("#8A8A8A", "#8E8E8E")
     static let chipFill = dynamic("#F2F2F2", "#333333")
-    static let sendFill = dynamic("#0D0D0D", "#ECECEC")
-    static let sendFg = dynamic("#FFFFFF", "#0D0D0D")
+    static let sendFill = dynamic("#1A1C1F", "#DFDFDF")
+    static let sendFg = dynamic("#FFFFFF", "#181818")
     static let warn = dynamic("#B45309", "#F5B453")
     static let danger = dynamic("#B91C1C", "#F87171")
     static let live = dynamic("#1F9D55", "#4ADE80")
+
+    private static func inkOpacity(light: CGFloat, dark: CGFloat) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(hex: isDark ? "#FFFFFF" : "#1A1C1F").withAlphaComponent(isDark ? dark : light)
+        })
+    }
 
     static func dynamic(_ light: String, _ dark: String) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
