@@ -133,6 +133,54 @@ enum CodexAccountOps {
         let payload = CredentialFreshness.newest(previous, try compact(payload), timestamp: CredentialFreshness.codex)
         if previous != payload { try vault.write(account.keychainService, payload) }
     }
+    /// Build a push without changing any native files, runtime homes, or saved credentials.
+    /// The shared client may have rotated this account's refresh token since the last import.
+    static func pushPlan(_ account: CodexAccount, base: [String: String], vault: CredentialVault = .system) throws -> AccountPushOps.Plan {
+        let home = AppAuthPaths.localCodexHome(env: base)
+        try requireFileStore(home: home)
+        let authURL = home.appendingPathComponent("auth.json")
+        let sharedOriginal = try AccountPushOps.readFile(authURL)
+        let runtimeOriginal = try AccountPushOps.readFile(AppAuthPaths.codexRuntimeHome(account.id).appendingPathComponent("auth.json"))
+        let saved = try vault.readForBackup(account.keychainService)
+        var candidates: [String] = []
+        if let saved {
+            guard (try? Self.account(payload: saved).id) == account.id else {
+                throw AccountOps.Failure(message: "保存的 Codex 登录态损坏或与所选账号不一致，未推送；请重新保存该账号的登录态。")
+            }
+            candidates.append(try compact(saved))
+        }
+        // Other accounts and malformed runtime files cannot replace the selected account's snapshot.
+        for bytes in [runtimeOriginal, sharedOriginal] {
+            if let bytes, let payload = String(data: bytes, encoding: .utf8),
+               (try? Self.account(payload: payload).id) == account.id {
+                candidates.append(try compact(payload))
+            }
+        }
+        guard var payload = candidates.first else {
+            throw AccountOps.Failure(message: "没有可用的所选 Codex 账号登录态，未推送；请重新保存或登录。")
+        }
+        for candidate in candidates.dropFirst() {
+            let currentTime = CredentialFreshness.codex(payload)
+            let candidateTime = CredentialFreshness.codex(candidate)
+            // An undated file is not evidence that a dated refresh token should be rolled back.
+            if let currentTime {
+                guard let candidateTime, candidateTime >= currentTime else { continue }
+            }
+            payload = candidate
+        }
+        return AccountPushOps.Plan(files: [
+            .init(url: authURL, contents: Data(payload.utf8), mode: 0o600, expectedOriginal: .some(sharedOriginal))
+        ])
+    }
+    /// Check the consumer's file, independently of the saved snapshot and transaction bookkeeping.
+    static func verifyPushedAccount(_ account: CodexAccount, home: URL) throws {
+        try requireFileStore(home: home)
+        guard let data = try AccountPushOps.readFile(home.appendingPathComponent("auth.json")),
+              let payload = String(data: data, encoding: .utf8),
+              (try? Self.account(payload: payload).id) == account.id else {
+            throw AccountOps.Failure(message: "Codex 共享登录态回读校验未通过，未确认推送成功；恢复备份仍保留。")
+        }
+    }
     static func prepare(_ account: CodexAccount, base: [String: String], vault: CredentialVault = .system) throws -> [String: String] {
         let home = AppAuthPaths.codexRuntimeHome(account.id)
         let authURL = home.appendingPathComponent("auth.json")

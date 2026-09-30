@@ -123,6 +123,9 @@ struct WorkspaceView: View {
             CodexLoginSheet(session: $0)
         }
         .sheet(isPresented: Binding(get: { accounts.addingProvider }, set: { accounts.addingProvider = $0 })) { ProviderAddSheet() }
+        .sheet(item: Binding(get: { accounts.codexPushConfirmation }, set: { accounts.codexPushConfirmation = $0 })) {
+            CodexDesktopPushSheet(account: $0)
+        }
         .alert("接管未完成", isPresented: Binding(get: { store.takeoverError != nil }, set: { if !$0 { store.takeoverError = nil } })) {
             Button("好") { store.takeoverError = nil }
         } message: { Text(store.takeoverError ?? "") }

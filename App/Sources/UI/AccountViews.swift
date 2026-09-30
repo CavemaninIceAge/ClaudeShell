@@ -106,17 +106,15 @@ struct AccountMenuItems: View {
                 Task { await accounts.pushCodexToTerminal() }
             }
             .disabled(!accounts.canPushToCodexApp)
-            Text("Codex CLI 与 Codex App 共用登录态")
+            Text("仅更新登录文件；不会切换运行中的 Codex App")
         }
         .disabled((!accounts.canPushToTerminal && !accounts.canPushToCodexApp) || accounts.busy != nil)
         Menu("推送至 Codex App") {
-            Text("将所选 Codex 登录态写入本机 Codex 配置")
-            Text("同时影响 Codex CLI；Codex App 可能需要重启")
-            Button("推送 \(accounts.activeCodex?.shortName ?? "当前账号") 至 Codex App") {
-                Task { await accounts.pushToCodexApp() }
-            }
+            Text("退出桌面端 → 写入并校验 → 后台重新启动")
+            Button("推送 \(accounts.activeCodex?.shortName ?? "当前账号") 并重启 Codex App…") { accounts.requestCodexDesktopPush() }
         }
         .disabled(!accounts.canPushToCodexApp || accounts.busy != nil)
+        if let status = accounts.codexPushStatus { Text(status) }
         if accounts.hasPushBackup {
             Button("撤回上次推送") { Task { await accounts.rollbackLastPush() } }
                 .disabled(accounts.busy != nil)
@@ -139,6 +137,31 @@ struct AccountMenuItems: View {
             }
             .disabled(accounts.busy != nil)
         }
+    }
+}
+
+/// Captures the selected account before any external application or credential is changed.
+struct CodexDesktopPushSheet: View {
+    @Environment(AccountStore.self) private var accounts
+    let account: CodexAccount
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("推送并重启 Codex App").font(.system(size: 20, weight: .semibold))
+            Text(account.email).font(.system(size: 14, weight: .medium)).textSelection(.enabled)
+            Text("将正常退出 Codex / ChatGPT 桌面应用，写入并校验此账号的登录态，再在后台重新启动。Codex CLI 也会使用这个账号。")
+                .font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+            Text("重启会中断桌面端正在运行的任务，包括其中的当前对话。请等任务结束后再继续。若桌面端拒绝退出，不会强制结束进程，也不会改写账号。")
+                .font(.system(size: 13)).foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("取消") { accounts.codexPushConfirmation = nil }.keyboardShortcut(.cancelAction)
+                Button("推送并重启") {
+                    accounts.codexPushConfirmation = nil
+                    Task { await accounts.pushToCodexApp(account) }
+                }.buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28).frame(width: 460)
     }
 }
 

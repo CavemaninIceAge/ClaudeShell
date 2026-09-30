@@ -132,6 +132,8 @@ final class AccountStore {
     var lastError: String?
     private(set) var switchNote: String?
     private(set) var hasPushBackup = false
+    var codexPushConfirmation: CodexAccount?
+    private(set) var codexPushStatus: String?
     var loginSession: LoginSession?
     var codexLoginSession: CodexLoginSession?
     var addingProvider = false
@@ -475,29 +477,74 @@ final class AccountStore {
             note("已推送至终端并保存恢复备份；请新开 Claude Code 会话使用")
         } catch { lastError = error.localizedDescription }
     }
-    /// Codex Desktop and the Codex CLI intentionally share the local auth store.
-    func pushToCodexApp() async {
+    /// File publication and a running desktop's account are separate states.
+    /// Confirmation is captured against a specific account so a later selection cannot change the target.
+    func requestCodexDesktopPush() {
         load()
         guard let account = activeCodex else { return }
+        codexPushConfirmation = account
+    }
+
+    func pushToCodexApp(_ account: CodexAccount) async {
         while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
         inFlight = true; busy = .switching("push-codex"); lastError = nil
         defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
         let env = liveEnv
+        codexPushStatus = "正在准备推送并重启 Codex App…"
+        var fileVerified = false
         do {
-            try await Task.detached(priority: .userInitiated) {
-                let home = AppAuthPaths.localCodexHome(env: env)
-                try CodexAccountOps.requireFileStore(home: home)
-                _ = try CodexAccountOps.prepare(account, base: env)
-                guard let payload = KeychainCLI.read(service: account.keychainService) else { throw AccountOps.Failure(message: "Codex 登录态快照不可用") }
-                let authURL = home.appendingPathComponent("auth.json")
-                let plan = AccountPushOps.Plan(files: [.init(url: authURL, contents: Data(payload.utf8), mode: 0o600)])
-                try AccountPushOps.transaction(plan, label: "Codex app 与 Codex CLI")
+            guard let target = CodexDesktopLifecycle.locate() else {
+                throw AccountOps.Failure(message: "未找到 Codex / ChatGPT 桌面应用，未改写账号。若只需要终端，请选择“推送至 Codex CLI”。")
+            }
+            // Validate the account before asking the other application to quit. Replan afterwards to
+            // include any final native token refresh and prevent shutdown from overwriting our push.
+            _ = try await Task.detached(priority: .userInitiated) {
+                try CodexAccountOps.pushPlan(account, base: env)
             }.value
-            hasPushBackup = true
-            note("已推送到 Codex app / CLI 共用登录态并备份；运行中的 Codex app 可能需要重启")
-        } catch { lastError = error.localizedDescription }
+            let home = AppAuthPaths.localCodexHome(env: env)
+            codexPushStatus = "正在正常退出 Codex App；随后写入 \(account.email)…"
+            _ = try await CodexDesktopLifecycle.perform(target: target, environment: ["CODEX_HOME": home.path]) {
+                try await Self.publishCodexAccount(account, environment: env)
+                fileVerified = true
+            }
+            codexPushStatus = "已写入并核验 \(account.email)，Codex App 已在后台重新启动。请核对桌面端头像中的账号。"
+            note("Codex 登录文件已核验，桌面端已重新启动")
+        } catch {
+            codexPushStatus = fileVerified
+                ? "登录文件已写入并核验，但 Codex App 重启未完成：\(error.localizedDescription)。恢复备份已保留。"
+                : "Codex App 切换未完成：\(error.localizedDescription)"
+            lastError = codexPushStatus
+        }
     }
-    func pushCodexToTerminal() async { await pushToCodexApp() }
+
+    func pushCodexToTerminal() async {
+        load()
+        guard let account = activeCodex else { return }
+        while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
+        inFlight = true; busy = .switching("push-codex-cli"); lastError = nil
+        defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
+        do {
+            codexPushStatus = "正在推送至 Codex CLI…"
+            try await Self.publishCodexAccount(account, environment: liveEnv)
+            codexPushStatus = "已核验 Codex CLI 登录文件为 \(account.email)。正在运行的 Codex App 尚未切换；需要使用“推送并重启 Codex App”。"
+            note("已推送至 Codex CLI；桌面端尚未切换")
+        } catch {
+            codexPushStatus = "Codex CLI 推送未完成：\(error.localizedDescription)"
+            lastError = codexPushStatus
+        }
+    }
+
+    private static func publishCodexAccount(_ account: CodexAccount, environment: [String: String]) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let home = AppAuthPaths.localCodexHome(env: environment)
+            let plan = try CodexAccountOps.pushPlan(account, base: environment)
+            try AccountPushOps.transaction(plan, label: "Codex CLI 登录文件")
+            try CodexAccountOps.verifyPushedAccount(account, home: home)
+            if let contents = plan.files.first?.contents, let payload = String(data: contents, encoding: .utf8) {
+                try CodexAccountOps.save(account, payload: payload)
+            }
+        }.value
+    }
 
     func removeCodex(_ id: String) async {
         guard codexAccounts.contains(where: { $0.id == id }) else { return }
@@ -507,12 +554,17 @@ final class AccountStore {
     func rollbackLastPush() async {
         while inFlight { try? await Task.sleep(for: .milliseconds(50)) }
         inFlight = true; busy = .switching("rollback"); lastError = nil
+        codexPushStatus = "正在恢复上次推送前的登录态…"
         defer { inFlight = false; busy = nil; hasPushBackup = AccountPushOps.hasBackup }
         do {
             try await Task.detached(priority: .userInitiated) { try AccountPushOps.rollback() }.value
             hasPushBackup = AccountPushOps.hasBackup
+            codexPushStatus = "已恢复上次推送前的登录文件。正在运行的桌面端尚未重新载入恢复后的账号，请重新打开客户端。"
             note("已恢复上次推送前的登录态；正在运行的客户端可能需要重启")
-        } catch { lastError = error.localizedDescription }
+        } catch {
+            codexPushStatus = "恢复推送未完成：\(error.localizedDescription)"
+            lastError = codexPushStatus
+        }
     }
 
     func remove(_ id: String) async {

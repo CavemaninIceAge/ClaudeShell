@@ -15,8 +15,8 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
     ENABLE_HARDENED_RUNTIME: NO
-    MARKETING_VERSION: "0.4.2"
-    CURRENT_PROJECT_VERSION: "7"
+    MARKETING_VERSION: "0.4.3"
+    CURRENT_PROJECT_VERSION: "8"
 targets:
   ClaudexShell:
     type: application
@@ -40,8 +40,8 @@ targets:
         CFBundleDevelopmentRegion: zh-Hans
         CFBundleDisplayName: Claudex Shell
         CFBundleName: Claudex Shell
-        CFBundleShortVersionString: "0.4.2"
-        CFBundleVersion: "7"
+        CFBundleShortVersionString: "0.4.3"
+        CFBundleVersion: "8"
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "© 2026"
         NSHighResolutionCapable: true

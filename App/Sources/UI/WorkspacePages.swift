@@ -364,7 +364,10 @@ struct WorkspaceAppsPage: View {
                     }.menuStyle(.borderlessButton).fixedSize()
                         .disabled(accounts.busy != nil || accounts.loginSession != nil || accounts.codexLoginSession != nil || accounts.addingProvider)
                 }.padding(.top, 10)
-                if let note = accounts.switchNote { Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 8) }
+                if let status = accounts.codexPushStatus {
+                    Text(status).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                } else if let note = accounts.switchNote { Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 8) }
             }
             WorkspacePageSection("更多应用与工具") {
                 Text("对话使用原生引擎的内置工具与项目配置。已保存账号使用隔离环境；全局 MCP、插件及云端应用的授权不会自动复制。")
